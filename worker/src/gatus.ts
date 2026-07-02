@@ -11,12 +11,42 @@ export interface EndpointDescriptor {
   key: string;
 }
 
+/**
+ * Map an API category label to its display group, mirroring the stremio-addons-hub homepage sections.
+ * The homepage collapses several labels into one section (movies + tv shows, music + radios), so the status page groups match.
+ */
+const LABEL_TO_GROUP: Record<string, string> = {
+  movies: "Movies & Series",
+  "tv shows": "Movies & Series",
+  "live tv": "Live TV",
+  torrents: "Torrents",
+  usenet: "Usenet",
+  "http streams": "HTTP Streams",
+  subtitles: "Subtitles",
+  anime: "Anime",
+  "asian drama": "Asian Drama",
+  bollywood: "Bollywood",
+  "debrid support": "Debrid",
+  metadata: "Metadata",
+  misc: "Miscellaneous",
+  music: "Music & Radio",
+  radios: "Music & Radio",
+  nsfw: "Adult Content (18+)",
+};
+
+/** Resolve an addon's primary category into its homepage-style display group. */
+function groupFor(addon: NormalizedAddon): string {
+  const primary = addon.categories[0];
+  if (!primary) return "Uncategorized";
+  return LABEL_TO_GROUP[primary.trim().toLowerCase()] || "Uncategorized";
+}
+
 /** Build one descriptor per addon with globally-unique Gatus keys. */
 export function buildEndpoints(addons: NormalizedAddon[]): EndpointDescriptor[] {
   const used = new Set<string>();
   const out: EndpointDescriptor[] = [];
   for (const addon of addons) {
-    const group = addon.categories[0] || "Uncategorized";
+    const group = groupFor(addon);
     let name = addon.slug || addon.uuid;
     let key = keyOf(group, name);
     // Slugs are unique, but sanitize could still collapse two distinct ones; guard against cross-wired pushes.
