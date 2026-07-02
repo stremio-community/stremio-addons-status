@@ -44,7 +44,7 @@ endpoints:
         success-threshold: 1
 
   - name: Stremio API
-    group: Stremio Platform
+    group: " Stremio Platform"
     url: "https://api.strem.io/api/v1"
     method: POST
     interval: 5m
@@ -60,7 +60,7 @@ endpoints:
         success-threshold: 1
 
   - name: Cinemeta
-    group: Stremio Platform
+    group: " Stremio Platform"
     url: "https://v3-cinemeta.strem.io/manifest.json"
     interval: 5m
     client:
@@ -76,7 +76,7 @@ endpoints:
         success-threshold: 1
 
   - name: Stremio Web Player
-    group: Stremio Platform
+    group: " Stremio Platform"
     url: "https://web.stremio.com/"
     interval: 5m
     client:
@@ -91,7 +91,7 @@ endpoints:
         success-threshold: 1
 
   - name: Stremio Website
-    group: Stremio Platform
+    group: " Stremio Platform"
     url: "https://www.stremio.com/"
     interval: 5m
     client:
