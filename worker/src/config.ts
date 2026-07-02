@@ -3,6 +3,8 @@ export const config = {
   gatusUrl: (process.env.GATUS_URL || "http://gatus:8080").replace(/\/$/, ""),
   pushToken: process.env.PUSH_TOKEN || "",
   proxyUrl: process.env.PROXY_URL || "",
+  // Empty = Discord disabled: the worker omits the alert block from generated endpoints entirely.
+  discordWebhookUrl: process.env.DISCORD_WEBHOOK_URL || "",
   endpointsConfigPath: process.env.ENDPOINTS_CONFIG_PATH || "/config/10-endpoints.yaml",
 
   probeInterval: parseDuration(process.env.PROBE_INTERVAL, 15 * 60_000),

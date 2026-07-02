@@ -42,21 +42,24 @@ interface ExternalEndpointYaml {
 
 /** Render + atomically write 10-endpoints.yaml into the shared Gatus config dir. */
 export async function writeConfig(endpoints: EndpointDescriptor[]): Promise<void> {
-  const alerts = [
-    {
-      type: "discord",
-      description: "addon down",
-      "send-on-resolved": true,
-      "failure-threshold": 1,
-      "success-threshold": 1,
-    },
-  ];
+  // No webhook configured -> omit alerts so the generated YAML doesn't carry dead discord entries.
+  const alerts = config.discordWebhookUrl
+    ? [
+        {
+          type: "discord",
+          description: "addon down",
+          "send-on-resolved": true,
+          "failure-threshold": 1,
+          "success-threshold": 1,
+        },
+      ]
+    : undefined;
 
   const external: ExternalEndpointYaml[] = endpoints.map((e) => ({
     name: e.name,
     group: e.group,
     token: "${PUSH_TOKEN}",
-    alerts,
+    ...(alerts ? { alerts } : {}),
   }));
 
   const doc = stringify(
