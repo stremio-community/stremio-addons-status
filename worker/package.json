@@ -1,0 +1,27 @@
+{
+  "name": "worker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Deep-probes Stremio addons and pushes verdicts to Gatus.",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "start:dev": "tsx watch --env-file-if-exists=../.env --env-file-if-exists=.env.dev src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@stremio-addon/sdk": "^1.0.0",
+    "fetch-socks": "^1.3.3",
+    "p-limit": "^6.2.0",
+    "undici": "^8.5.0",
+    "yaml": "^2.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.9.2",
+    "vitest": "^3.0.0"
+  }
+}

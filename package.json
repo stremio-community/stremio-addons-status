@@ -1,0 +1,18 @@
+{
+  "name": "stremio-addons-status",
+  "version": "1.0.0",
+  "private": true,
+  "packageManager": "pnpm@11.9.0",
+  "description": "A status page for Stremio addons that checks whether an addon actually works.",
+  "scripts": {
+    "start:dev": "pnpm -F worker start:dev",
+    "build": "pnpm -F worker build",
+    "typecheck": "pnpm -F worker typecheck",
+    "test": "pnpm -F worker test",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "prettier": "^3.9.4"
+  }
+}

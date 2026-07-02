@@ -1,0 +1,36 @@
+storage:
+  type: postgres
+  path: "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable"
+  caching: true
+
+ui:
+  title: "Stremio Addons Status"
+  header: "Stremio Addons Status"
+  description: "Monitors the health of Stremio addons. Powered by Gatus and stremio-addons.net."
+  logo: "https://stremio-addons.net/favicon.ico"
+  link: "https://stremio-addons.net"
+  buttons:
+    - name: "stremio-addons.net"
+      link: "https://stremio-addons.net"
+
+alerting:
+  discord:
+    webhook-url: "${DISCORD_WEBHOOK_URL}"
+    title: ":satellite: Stremio Addons Status"
+
+endpoints:
+  - name: stremio-addons.net
+    group: Infrastructure
+    url: "https://stremio-addons.net/health"
+    interval: 5m
+    conditions:
+      - "[STATUS] == 200"
+      - "[BODY] == OK"
+    alerts:
+      - type: discord
+        description: "stremio-addons.net unreachable"
+        send-on-resolved: true
+        failure-threshold: 2
+        success-threshold: 1
+
+# Per-addon verdicts are pushed by the worker as external-endpoints (10-endpoints.yaml).
