@@ -6,6 +6,7 @@ storage:
 ui:
   title: "Stremio Addons Status"
   header: "Stremio Addons Status"
+  dashboard-subheading: "Real-time health of Stremio addons. Powered by Gatus and stremio-addons.net."
   description: "Monitors the health of Stremio addons. Powered by Gatus and stremio-addons.net."
   logo: "https://stremio-addons.net/favicon.ico"
   link: "https://stremio-addons.net"
