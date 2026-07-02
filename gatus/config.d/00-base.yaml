@@ -6,13 +6,22 @@ storage:
 ui:
   title: "Stremio Addons Status"
   header: "Stremio Addons Status"
-  dashboard-subheading: "Real-time health of Stremio addons. Powered by Gatus and stremio-addons.net."
+  dashboard-heading: "Uptime"
+  dashboard-subheading: "Real-time uptime of Stremio addons & services. Powered by Gatus and stremio-addons.net."
   description: "Monitors the health of Stremio addons. Powered by Gatus and stremio-addons.net."
+  default-sort-by: group
   logo: "https://stremio-addons.net/favicon.ico"
   link: "https://stremio-addons.net"
+  # Hide the Gatus footer social links.
+  custom-css: |
+    #social { display: none !important; }
   buttons:
     - name: "stremio-addons.net"
       link: "https://stremio-addons.net"
+    - name: "GitHub"
+      link: "https://github.com/Stremio-Community/stremio-addons-status"
+    - name: "Grafana"
+      link: "${GRAFANA_PUBLIC_URL}/d/stremio-addons-home?kiosk"
 
 alerting:
   discord:

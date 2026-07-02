@@ -45,6 +45,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL}
       PUSH_TOKEN: ${PUSH_TOKEN}
+      GRAFANA_PUBLIC_URL: ${GRAFANA_PUBLIC_URL}
     ports:
       - "${GATUS_PORT}:8080"
     volumes:
