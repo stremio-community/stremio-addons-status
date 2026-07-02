@@ -9,6 +9,7 @@ import { config } from "./config.js";
 import { getJson } from "./http.js";
 import { encodeId, errMsg } from "./utils.js";
 import { hasSourceFor, resolveForPrefixes, type TestContent } from "./idsources.js";
+import { logger } from "./logger.js";
 import type { NormalizedAddon, PerResourceResult, ProbeResult, ProbeMode } from "./types.js";
 
 /**
@@ -136,6 +137,9 @@ function result(
 export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
   const start = Date.now();
   const perResource: PerResourceResult[] = [];
+  // Child logger scoped to this addon; every step below traces on it so the path to the verdict is reconstructable.
+  const log = logger.child({ addon: addon.slug });
+  log.debug({ step: "start", baseUrl: addon.baseUrl }, "probe start");
 
   // Step 1: Liveness floor.
   let live: Manifest;
@@ -145,6 +149,7 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
       config.timeouts.manifest,
     );
     if (status < 200 || status >= 300 || !data || typeof data !== "object" || Array.isArray(data)) {
+      log.debug({ step: "manifest", status }, "manifest unreachable → DOWN");
       return result(
         false,
         `manifest unreachable (HTTP ${status})`,
@@ -159,6 +164,7 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
     }
     live = data;
   } catch (e) {
+    log.debug({ step: "manifest", err: errMsg(e) }, "manifest fetch threw → DOWN");
     return result(
       false,
       `manifest unreachable (${errMsg(e)})`,
@@ -174,13 +180,19 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
 
   const norm = normalizeResources(live);
   const catalogs = live.catalogs ?? [];
+  log.debug(
+    { step: "manifest", resources: norm.map((r) => r.name), catalogs: catalogs.length },
+    "manifest reachable (liveness floor passed)",
+  );
 
-  const livenessOnly = (reason: string): ProbeResult =>
-    result(true, `manifest reachable · content not deep-checked (${reason})`, start, {
+  const livenessOnly = (reason: string): ProbeResult => {
+    log.debug({ step: "verdict", mode: "liveness-only", reason }, `liveness-only UP: ${reason}`);
+    return result(true, `manifest reachable · content not deep-checked (${reason})`, start, {
       live: true,
       mode: "liveness-only",
       perResource,
     });
+  };
 
   // Step 2: Discovery / early liveness-only.
   if (live.behaviorHints?.configurationRequired === true)
@@ -200,6 +212,7 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
         : null;
 
   if (!primary) return livenessOnly("no testable resource");
+  log.debug({ step: "discovery", primary, catalogTestable }, `primary resource: ${primary}`);
 
   // Step 3: Source a real, servable test ID.
   let test: TestContent | null = null;
@@ -221,11 +234,23 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
         if (status >= 200 && status < 300 && firstValid) {
           perResource.push({ resource: "catalog", ok: true, detail: `${metas.length} metas` });
           test = { type: firstValid.type || picked.catalog.type, id: firstValid.id };
+          log.debug(
+            {
+              step: "testid",
+              source: "catalog",
+              type: test.type,
+              id: test.id,
+              metas: metas.length,
+            },
+            "sourced test ID from own catalog",
+          );
         } else {
           perResource.push({ resource: "catalog", ok: false, detail: `empty (HTTP ${status})` });
+          log.debug({ step: "catalog", status, metas: metas.length }, "catalog empty/unreachable");
         }
       } catch (e) {
         perResource.push({ resource: "catalog", ok: false, detail: errMsg(e) });
+        log.debug({ step: "catalog", err: errMsg(e) }, "catalog fetch threw");
       }
     }
   }
@@ -235,12 +260,31 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
     if (streamRes.idPrefixes.length && hasSourceFor(streamRes.idPrefixes)) {
       const candidates = await resolveForPrefixes(streamRes.idPrefixes);
       test = pickCandidate(candidates, streamRes.types);
+      log.debug(
+        {
+          step: "testid",
+          source: "borrowed",
+          prefixes: streamRes.idPrefixes,
+          type: test?.type,
+          id: test?.id,
+        },
+        test ? "borrowed test ID from external source" : "no candidate from external source",
+      );
+    } else {
+      log.debug(
+        { step: "testid", source: "none", prefixes: streamRes.idPrefixes },
+        "no ID source for stream prefixes",
+      );
     }
   }
 
   // For episodic content, a stream query needs an episode id.
   if (test && !test.episodeId && EPISODIC_TYPES.has(test.type) && metaRes) {
     test.episodeId = await firstEpisodeId(addon.baseUrl, test.type, test.id);
+    log.debug(
+      { step: "testid", type: test.type, id: test.id, episodeId: test.episodeId },
+      "resolved episode ID for episodic content",
+    );
   }
 
   // Step 4: Validate resources.
@@ -267,16 +311,26 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
         ok,
         detail: ok ? `${valid} valid` : `${valid} valid / ${streams.length} total`,
       });
+      log.debug(
+        { step: "stream", ok, status, valid, total: streams.length, type, id },
+        `stream check ${ok ? "ok" : "fail"}: ${valid}/${streams.length} playable`,
+      );
     } catch (e) {
       streamCounts = { total: 0, valid: 0 };
       perResource.push({ resource: "stream", ok: false, detail: errMsg(e) });
+      log.debug({ step: "stream", ok: false, err: errMsg(e), type, id }, "stream fetch threw");
     }
   }
 
   // meta resource: skip bare tt on a catalog-less scraper (Cinemeta owns imdb meta).
   if (metaRes && test) {
     const borrowedImdb = !catalogTestable && test.id.startsWith("tt");
-    if (!borrowedImdb) {
+    if (borrowedImdb) {
+      log.debug(
+        { step: "meta", id: test.id },
+        "skipped meta check (borrowed imdb id owned by Cinemeta)",
+      );
+    } else {
       try {
         const { status, data } = await getJson<MetaResponse>(
           `${addon.baseUrl}/meta/${test.type}/${encodeId(test.id)}.json`,
@@ -288,8 +342,13 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
           ok,
           detail: ok ? "valid" : `invalid (HTTP ${status})`,
         });
+        log.debug(
+          { step: "meta", ok, status, type: test.type, id: test.id },
+          `meta check ${ok ? "ok" : "fail"}`,
+        );
       } catch (e) {
         perResource.push({ resource: "meta", ok: false, detail: errMsg(e) });
+        log.debug({ step: "meta", ok: false, err: errMsg(e) }, "meta fetch threw");
       }
     }
   }
@@ -301,11 +360,13 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
         `${addon.baseUrl}/subtitles/${test.type}/${encodeId(test.episodeId ?? test.id)}.json`,
         config.timeouts.meta,
       );
+      const ok = Array.isArray(data?.subtitles);
       perResource.push({
         resource: "subtitles",
-        ok: Array.isArray(data?.subtitles),
-        detail: Array.isArray(data?.subtitles) ? `${data!.subtitles!.length} subs` : "no array",
+        ok,
+        detail: ok ? `${data!.subtitles!.length} subs` : "no array",
       });
+      log.debug({ step: "subtitles", ok }, "subtitles check (annotation only)");
     } catch {
       /* secondary: ignore */
     }
@@ -320,6 +381,10 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
       : "manifest reachable";
 
   if (primaryResult?.ok) {
+    log.debug(
+      { step: "verdict", mode: "content", primary, streamCounts },
+      `content UP: primary resource ${primary} passed`,
+    );
     return result(true, message, start, {
       live: true,
       mode: "content",
@@ -333,6 +398,10 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
     primary === "stream"
       ? `manifest up · ${streamCounts?.valid ?? 0} streams`
       : `manifest up · ${primary} check failed`;
+  log.debug(
+    { step: "verdict", mode: "content", primary, streamCounts },
+    `content DOWN: primary resource ${primary} failed`,
+  );
   return result(
     false,
     downMsg,
