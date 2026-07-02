@@ -41,12 +41,40 @@ function groupFor(addon: NormalizedAddon): string {
   return LABEL_TO_GROUP[primary.trim().toLowerCase()] || "Uncategorized";
 }
 
+/**
+ * Top-to-bottom display order, matching the stremio-addons-hub homepage sections.
+ * Gatus has no group-ordering config and sorts alphabetically via localeCompare (TwiN/gatus#553), so we encode order as leading spaces:
+ * localeCompare sorts more-spaces-first, HTML collapses leading spaces so they stay invisible, and Gatus derives the endpoint key by trimming the group -- so the key (and its history) is untouched.
+ */
+const GROUP_ORDER = [
+  "Movies & Series",
+  "Live TV",
+  "Torrents",
+  "Usenet",
+  "HTTP Streams",
+  "Subtitles",
+  "Anime",
+  "Asian Drama",
+  "Bollywood",
+  "Debrid",
+  "Metadata",
+  "Miscellaneous",
+  "Music & Radio",
+  "Adult Content (18+)",
+];
+
+/** Prefix a group with invisible leading spaces so Gatus renders it in GROUP_ORDER instead of alphabetically. Unlisted groups (e.g. Uncategorized) get none and sort last. */
+function orderPrefix(group: string): string {
+  const i = GROUP_ORDER.indexOf(group);
+  return i < 0 ? group : " ".repeat(GROUP_ORDER.length - i) + group;
+}
+
 /** Build one descriptor per addon with globally-unique Gatus keys. */
 export function buildEndpoints(addons: NormalizedAddon[]): EndpointDescriptor[] {
   const used = new Set<string>();
   const out: EndpointDescriptor[] = [];
   for (const addon of addons) {
-    const group = groupFor(addon);
+    const group = orderPrefix(groupFor(addon));
     let name = addon.slug || addon.uuid;
     let key = keyOf(group, name);
     // Slugs are unique, but sanitize could still collapse two distinct ones; guard against cross-wired pushes.
