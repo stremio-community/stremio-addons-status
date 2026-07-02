@@ -10,6 +10,8 @@ export interface NormalizedAddon {
   stars: number;
   /** Category names from the API, first is primary. */
   categories: string[];
+  /** When set, this addon is an instance of the named parent; its display group becomes "<parent> Instances" instead of a category group. */
+  instanceOf?: string;
 }
 
 export type ProbeMode = "content" | "liveness-only";

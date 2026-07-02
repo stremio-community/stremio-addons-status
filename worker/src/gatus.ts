@@ -34,8 +34,9 @@ const LABEL_TO_GROUP: Record<string, string> = {
   nsfw: "Adult Content (18+)",
 };
 
-/** Resolve an addon's primary category into its homepage-style display group. */
+/** Resolve an addon's display group: instances group under "<parent> Instances", others under their primary category. */
 function groupFor(addon: NormalizedAddon): string {
+  if (addon.instanceOf) return `${addon.instanceOf} Instances`;
   const primary = addon.categories[0];
   if (!primary) return "Uncategorized";
   return LABEL_TO_GROUP[primary.trim().toLowerCase()] || "Uncategorized";
@@ -61,12 +62,22 @@ const GROUP_ORDER = [
   "Miscellaneous",
   "Music & Radio",
   "Adult Content (18+)",
+  "Uncategorized",
 ];
 
-/** Prefix a group with invisible leading spaces so Gatus renders it in GROUP_ORDER instead of alphabetically. Unlisted groups (e.g. Uncategorized) get none and sort last. */
-function orderPrefix(group: string): string {
-  const i = GROUP_ORDER.indexOf(group);
-  return i < 0 ? group : " ".repeat(GROUP_ORDER.length - i) + group;
+/**
+ * All "<parent> Instances" groups share this rank so they render as one contiguous block below the category groups.
+ * The static base groups (00-base.yaml) sit at the ranks below it; keep their leading-space counts in sync:
+ *   Stremio Platform = rank INSTANCES_RANK+1 (2 spaces), Debrid Services = +2 (1 space), Infrastructure = +3 (0 spaces).
+ */
+const INSTANCES_RANK = GROUP_ORDER.length;
+/** Highest rank in the scheme; leading-space count for a group is ORDER_MAX - rank (more spaces sort first). */
+const ORDER_MAX = INSTANCES_RANK + 3;
+
+/** Prefix a group with invisible leading spaces so Gatus renders it in rank order instead of alphabetically. Unranked groups get none and sort last. */
+function orderPrefix(group: string, isInstance: boolean): string {
+  const rank = isInstance ? INSTANCES_RANK : GROUP_ORDER.indexOf(group);
+  return rank < 0 ? group : " ".repeat(ORDER_MAX - rank) + group;
 }
 
 /** Build one descriptor per addon with globally-unique Gatus keys. */
@@ -74,7 +85,7 @@ export function buildEndpoints(addons: NormalizedAddon[]): EndpointDescriptor[] 
   const used = new Set<string>();
   const out: EndpointDescriptor[] = [];
   for (const addon of addons) {
-    const group = orderPrefix(groupFor(addon));
+    const group = orderPrefix(groupFor(addon), !!addon.instanceOf);
     let name = addon.slug || addon.uuid;
     let key = keyOf(group, name);
     // Slugs are unique, but sanitize could still collapse two distinct ones; guard against cross-wired pushes.
