@@ -16,12 +16,10 @@ export function buildEndpoints(addons: NormalizedAddon[]): EndpointDescriptor[] 
   const used = new Set<string>();
   const out: EndpointDescriptor[] = [];
   for (const addon of addons) {
-    const group = foldAscii(addon.categories[0] || "") || "Uncategorized";
-    // Fold to URL-safe ASCII; fall back to slug/uuid if a name is all emoji/CJK.
-    let name = foldAscii(addon.name);
-    if (name.length < 2) name = foldAscii(addon.slug) || addon.uuid;
+    const group = addon.categories[0] || "Uncategorized";
+    let name = addon.slug || addon.uuid;
     let key = keyOf(group, name);
-    // Disambiguate colliding keys (same name+group) so pushes don't cross wires.
+    // Slugs are unique, but sanitize could still collapse two distinct ones; guard against cross-wired pushes.
     if (used.has(key)) {
       let n = 2;
       let candidate = `${name} (${n})`;
@@ -88,20 +86,6 @@ export async function pushResult(endpoint: EndpointDescriptor, r: ProbeResult): 
     signal: AbortSignal.timeout(15_000),
   });
   return res.status;
-}
-
-/**
- * Fold a name to URL-safe ASCII text.
- * Gatus can't match a pushed key that contains non-ASCII.
- */
-function foldAscii(s: string): string {
-  return s
-    .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/g, "") // strip combining diacritics
-    .replace(/[^\x20-\x7e]/g, "") // drop remaining non-ASCII (emoji, flags, CJK)
-    .replace(/[?"<>`{}\\]/g, " ") // URL-unsafe ASCII that Gatus doesn't dash
-    .replace(/\s+/g, " ")
-    .trim();
 }
 
 /**
