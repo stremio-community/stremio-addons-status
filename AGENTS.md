@@ -45,4 +45,5 @@ Gatus merges every `*.yaml`. `00-base.yaml` is hand-written (UI, storage, alerti
 
 - ESM TypeScript (`"type": "module"`); intra-package imports use `.js` extensions even though sources are `.ts`.
 - Structured logging via pino ([logger.ts](worker/src/logger.ts)); no `console.log`.
+- Keep this file current: when a change alters one of the non-obvious decisions above (probe verdict, proxy fallback, Gatus keys/ordering, config layout), update AGENTS.md in the same change.
 - stremio-addons.net API docs: https://docs.stremio-addons.net/developers/api
