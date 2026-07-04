@@ -168,7 +168,7 @@ describe("probe", () => {
     expect(r.detail.perResource.some((p) => p.resource === "stream")).toBe(false);
   });
 
-  it("(e) manifest 200 but streams empty/garbage ⇒ DOWN (manifest up · 0 streams)", async () => {
+  it("(e) manifest 200 but streams empty/garbage ⇒ DOWN (per-resource breakdown)", async () => {
     const m = addon({
       types: ["movie"],
       resources: [{ name: "stream", types: ["movie"], idPrefixes: ["tt"] }],
@@ -182,7 +182,8 @@ describe("probe", () => {
     const r = await probe(m);
     expect(r.success).toBe(false);
     expect(r.error).toBe("stream");
-    expect(r.message).toContain("0 streams");
+    // Failure message carries the full per-resource breakdown so Gatus's tooltip shows what was probed.
+    expect(r.message).toContain("stream: 0 valid / 2 total");
     expect(r.detail.live).toBe(true);
   });
 
