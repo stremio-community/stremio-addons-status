@@ -38,20 +38,32 @@ function orderPrefix(group: string): string {
   return rank < 0 ? group : " ".repeat(ORDER_MAX - rank) + group;
 }
 
+/** Display label for an addon: its real name, falling back to the unique slug then uuid. */
+function baseName(addon: NormalizedAddon): string {
+  return addon.name || addon.slug || addon.uuid;
+}
+
 /** Build one descriptor per addon with globally-unique Gatus keys. */
 export function buildEndpoints(addons: NormalizedAddon[]): EndpointDescriptor[] {
+  // Addon names aren't unique (slugs are), so pre-count shared name+group keys.
+  // We disambiguate every sharer, not just the "losers": suffixing only later collisions would depend on list order, drifting the key (and its Postgres history) between refreshes.
+  const counts = new Map<string, number>();
+  for (const addon of addons) {
+    const k = keyOf(orderPrefix(groupFor(addon)), baseName(addon));
+    counts.set(k, (counts.get(k) ?? 0) + 1);
+  }
+
   const used = new Set<string>();
   const out: EndpointDescriptor[] = [];
   for (const addon of addons) {
     const group = orderPrefix(groupFor(addon));
-    let name = addon.slug || addon.uuid;
+    let name = baseName(addon);
+    // Shared name -> disambiguate with the stable, unique slug (never an order-dependent counter).
+    if ((counts.get(keyOf(group, name)) ?? 0) > 1) name = `${name} (${addon.slug || addon.uuid})`;
     let key = keyOf(group, name);
-    // Slugs are unique, but sanitize could still collapse two distinct ones; guard against cross-wired pushes.
+    // Backstop: sanitize can still collapse two distinct slugs into one key; fall back to the unique uuid.
     if (used.has(key)) {
-      let n = 2;
-      let candidate = `${name} (${n})`;
-      while (used.has(keyOf(group, candidate))) candidate = `${name} (${++n})`;
-      name = candidate;
+      name = `${baseName(addon)} (${addon.uuid})`;
       key = keyOf(group, name);
     }
     used.add(key);
