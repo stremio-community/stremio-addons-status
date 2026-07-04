@@ -10,7 +10,7 @@ export interface NormalizedAddon {
   stars: number;
   /** Category names from the API, first is primary. */
   categories: string[];
-  /** When set, this addon is an instance of the named parent; its display group becomes "<parent> Instances" instead of a category group. */
+  /** When set, this addon is an instance of the named parent; it groups under "Addon Instances" instead of "Addons". */
   instanceOf?: string;
 }
 

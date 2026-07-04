@@ -35,7 +35,7 @@ Requests go through a Cloudflare WARP SOCKS5 proxy first, falling back to direct
 The worker registers each addon as an **external-endpoint** and POSTs verdicts; it doesn't run checks inside Gatus.
 
 - **Endpoint keys** must mirror Gatus's own `sanitize` rule (trim, lowercase, replace ` /_,.#&+` with `-`). Keys are an endpoint's identity in Postgres — changing key derivation orphans history. `buildEndpoints` dedups keys since lowercasing can collapse distinct slugs.
-- **Group ordering**: Gatus sorts groups alphabetically with no order config. Order is encoded as invisible **leading spaces** on the group name (more spaces sort first; HTML collapses them; Gatus trims the group before deriving the key so history is untouched). See `GROUP_ORDER` + `orderPrefix`; groups mirror stremio-addons.net homepage sections (`LABEL_TO_GROUP`). Keep static base groups in `00-base.yaml` in sync with this scheme.
+- **Groups**: five fixed groups top-to-bottom — `Addons`, `Addon Instances` (both worker-pushed), then `Stremio Platform`, `Debrid Services`, `Infrastructure` (static, in `00-base.yaml`). Every non-instance addon is `Addons`; instances collapse into `Addon Instances` (see `groupFor`). Gatus sorts groups alphabetically with no order config, so order is encoded as invisible **leading spaces** on the group name (more spaces sort first; HTML collapses them; Gatus trims the group before deriving the key so history is untouched). See `GROUP_ORDER` + `orderPrefix`; the static base groups hardcode their matching space counts in `00-base.yaml` (2/1/0), so keep the two in sync.
 
 ### Config files (`gatus/config.d/`)
 
