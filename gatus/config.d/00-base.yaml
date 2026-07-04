@@ -44,7 +44,7 @@ endpoints:
         success-threshold: 1
 
   - name: Stremio API
-    group: " Stremio Platform"
+    group: "  Stremio Platform"
     url: "https://api.strem.io/api/v1"
     method: POST
     interval: 5m
@@ -60,7 +60,7 @@ endpoints:
         success-threshold: 1
 
   - name: Cinemeta
-    group: " Stremio Platform"
+    group: "  Stremio Platform"
     url: "https://v3-cinemeta.strem.io/manifest.json"
     interval: 5m
     client:
@@ -76,7 +76,7 @@ endpoints:
         success-threshold: 1
 
   - name: Stremio Web Player
-    group: " Stremio Platform"
+    group: "  Stremio Platform"
     url: "https://web.stremio.com/"
     interval: 5m
     client:
@@ -91,7 +91,7 @@ endpoints:
         success-threshold: 1
 
   - name: Stremio Website
-    group: " Stremio Platform"
+    group: "  Stremio Platform"
     url: "https://www.stremio.com/"
     interval: 5m
     client:
@@ -106,7 +106,7 @@ endpoints:
         success-threshold: 1
 
   - name: Real-Debrid API
-    group: Debrid Services
+    group: " Debrid Services"
     url: "https://api.real-debrid.com/rest/1.0/time"
     interval: 5m
     client:
@@ -121,7 +121,7 @@ endpoints:
         success-threshold: 1
 
   - name: AllDebrid API
-    group: Debrid Services
+    group: " Debrid Services"
     url: "https://api.alldebrid.com/v4/ping"
     interval: 5m
     client:
@@ -136,7 +136,7 @@ endpoints:
         success-threshold: 1
 
   - name: Premiumize API
-    group: Debrid Services
+    group: " Debrid Services"
     url: "https://www.premiumize.me/api/account/info"
     interval: 5m
     client:
@@ -151,7 +151,7 @@ endpoints:
         success-threshold: 1
 
   - name: TorBox API
-    group: Debrid Services
+    group: " Debrid Services"
     url: "https://api.torbox.app/v1/api/stats"
     interval: 5m
     client:
