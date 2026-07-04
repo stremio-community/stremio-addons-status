@@ -11,72 +11,30 @@ export interface EndpointDescriptor {
   key: string;
 }
 
-/**
- * Map an API category label to its display group, mirroring the stremio-addons-hub homepage sections.
- * The homepage collapses several labels into one section (movies + tv shows, music + radios), so the status page groups match.
- */
-const LABEL_TO_GROUP: Record<string, string> = {
-  movies: "Movies & Series",
-  "tv shows": "Movies & Series",
-  "live tv": "Live TV",
-  torrents: "Torrents",
-  usenet: "Usenet",
-  "http streams": "HTTP Streams",
-  subtitles: "Subtitles",
-  anime: "Anime",
-  "asian drama": "Asian Drama",
-  bollywood: "Bollywood",
-  "debrid support": "Debrid",
-  metadata: "Metadata",
-  misc: "Miscellaneous",
-  music: "Music & Radio",
-  radios: "Music & Radio",
-  nsfw: "Adult Content (18+)",
-};
-
-/** Resolve an addon's display group: instances group under "<parent> Instances", others under their primary category. */
+/** Resolve an addon's display group: instances collapse under "Addon Instances", everything else under "Addons". */
 function groupFor(addon: NormalizedAddon): string {
-  if (addon.instanceOf) return `${addon.instanceOf} Instances`;
-  const primary = addon.categories[0];
-  if (!primary) return "Uncategorized";
-  return LABEL_TO_GROUP[primary.trim().toLowerCase()] || "Uncategorized";
+  return addon.instanceOf ? "Addon Instances" : "Addons";
 }
 
 /**
- * Top-to-bottom display order, matching the stremio-addons-hub homepage sections.
+ * Top-to-bottom display order for the whole status page: the two worker-pushed dynamic groups sit above the static base groups (00-base.yaml).
  * Gatus has no group-ordering config and sorts alphabetically via localeCompare (TwiN/gatus#553), so we encode order as leading spaces:
  * localeCompare sorts more-spaces-first, HTML collapses leading spaces so they stay invisible, and Gatus derives the endpoint key by trimming the group -- so the key (and its history) is untouched.
+ * The static base groups hardcode their matching space counts in 00-base.yaml; keep the two in sync (Stremio Platform = 2 spaces, Debrid Services = 1, Infrastructure = 0).
  */
 const GROUP_ORDER = [
-  "Movies & Series",
-  "Live TV",
-  "Torrents",
-  "Usenet",
-  "HTTP Streams",
-  "Subtitles",
-  "Anime",
-  "Asian Drama",
-  "Bollywood",
-  "Debrid",
-  "Metadata",
-  "Miscellaneous",
-  "Music & Radio",
-  "Adult Content (18+)",
-  "Uncategorized",
+  "Addons",
+  "Addon Instances",
+  "Stremio Platform",
+  "Debrid Services",
+  "Infrastructure",
 ];
-
-/**
- * All "<parent> Instances" groups share this rank so they render as one contiguous block below the category groups.
- * The static base groups (00-base.yaml) sit at the ranks below it; keep their leading-space counts in sync:
- *   Stremio Platform = rank INSTANCES_RANK+1 (2 spaces), Debrid Services = +2 (1 space), Infrastructure = +3 (0 spaces).
- */
-const INSTANCES_RANK = GROUP_ORDER.length;
 /** Highest rank in the scheme; leading-space count for a group is ORDER_MAX - rank (more spaces sort first). */
-const ORDER_MAX = INSTANCES_RANK + 3;
+const ORDER_MAX = GROUP_ORDER.length - 1;
 
 /** Prefix a group with invisible leading spaces so Gatus renders it in rank order instead of alphabetically. Unranked groups get none and sort last. */
-function orderPrefix(group: string, isInstance: boolean): string {
-  const rank = isInstance ? INSTANCES_RANK : GROUP_ORDER.indexOf(group);
+function orderPrefix(group: string): string {
+  const rank = GROUP_ORDER.indexOf(group);
   return rank < 0 ? group : " ".repeat(ORDER_MAX - rank) + group;
 }
 
@@ -85,7 +43,7 @@ export function buildEndpoints(addons: NormalizedAddon[]): EndpointDescriptor[] 
   const used = new Set<string>();
   const out: EndpointDescriptor[] = [];
   for (const addon of addons) {
-    const group = orderPrefix(groupFor(addon), !!addon.instanceOf);
+    const group = orderPrefix(groupFor(addon));
     let name = addon.slug || addon.uuid;
     let key = keyOf(group, name);
     // Slugs are unique, but sanitize could still collapse two distinct ones; guard against cross-wired pushes.
