@@ -268,7 +268,7 @@ describe("probe", () => {
     expect(r.success).toBe(false);
     expect(r.error).toBe("stream");
     // Failure message carries the full per-resource breakdown so Gatus's tooltip shows what was probed.
-    expect(r.message).toContain("stream: 0 valid / 2 total");
+    expect(r.message).toContain("stream: movie 0 valid / 2 total");
     expect(r.detail.live).toBe(true);
   });
 
