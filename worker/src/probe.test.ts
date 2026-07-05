@@ -78,7 +78,7 @@ beforeEach(() => {
 // --- tests -----------------------------------------------------------------
 
 describe("probe", () => {
-  it("(a) catalog-less imdb scraper -> IDs from Cinemeta, ≥1 playable stream ⇒ UP", async () => {
+  it("(a) catalog-less imdb scraper probes movie and series episode; 1+1 playable ⇒ DOWN", async () => {
     const m = addon({
       types: ["movie", "series"],
       resources: [{ name: "stream", types: ["movie", "series"], idPrefixes: ["tt", "kitsu"] }],
@@ -90,12 +90,80 @@ describe("probe", () => {
     ];
     router = routes([
       ["/manifest.json", manifestOk(m.manifest)],
-      ["/stream/movie/tt1.json", { status: 200, data: { streams: [PLAYABLE, PLAYABLE] } }],
+      ["/stream/movie/tt1.json", { status: 200, data: { streams: [PLAYABLE] } }],
+      ["/stream/series/tt2:1:1.json", { status: 200, data: { streams: [PLAYABLE] } }],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(false);
+    expect(r.detail.mode).toBe("content");
+    expect(r.error).toBe("stream");
+    expect(r.message).toContain("stream: movie 1 valid / 1 total");
+    expect(r.message).toContain("series 1 valid / 1 total");
+  });
+
+  it("catalog-less imdb scraper ⇒ UP when either movie or series returns more than 1 playable stream", async () => {
+    const m = addon({
+      types: ["movie", "series"],
+      resources: [{ name: "stream", types: ["movie", "series"], idPrefixes: ["tt"] }],
+    });
+    idsourcesMock.hasSourceFor = () => true;
+    idsourcesMock.resolveForPrefixes = async () => [
+      { type: "movie", id: "tt1" },
+      { type: "series", id: "tt2", episodeId: "tt2:1:1" },
+    ];
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      ["/stream/movie/tt1.json", { status: 200, data: { streams: [PLAYABLE] } }],
+      ["/stream/series/tt2:1:1.json", { status: 200, data: { streams: [PLAYABLE, PLAYABLE] } }],
     ]);
     const r = await probe(m);
     expect(r.success).toBe(true);
     expect(r.detail.mode).toBe("content");
-    expect(r.detail.streamCounts?.valid).toBeGreaterThanOrEqual(1);
+    expect(r.detail.streamCounts).toEqual({ total: 3, valid: 3 });
+    expect(r.message).toContain("stream: movie 1 valid / 1 total");
+    expect(r.message).toContain("series 2 valid / 2 total");
+  });
+
+  it("catalog-less imdb scraper ⇒ UP when movie has more than 1 playable stream and series fails", async () => {
+    const m = addon({
+      types: ["movie", "series"],
+      resources: [{ name: "stream", types: ["movie", "series"], idPrefixes: ["tt"] }],
+    });
+    idsourcesMock.hasSourceFor = () => true;
+    idsourcesMock.resolveForPrefixes = async () => [
+      { type: "movie", id: "tt1" },
+      { type: "series", id: "tt2", episodeId: "tt2:1:1" },
+    ];
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      ["/stream/movie/tt1.json", { status: 200, data: { streams: [PLAYABLE, PLAYABLE] } }],
+      ["/stream/series/tt2:1:1.json", { status: 200, data: { streams: [{ name: "junk" }] } }],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(r.message).toContain("movie 2 valid / 2 total");
+    expect(r.message).toContain("series 0 valid / 1 total");
+  });
+
+  it("catalog-less imdb scraper ⇒ DOWN when both movie and series return no playable streams", async () => {
+    const m = addon({
+      types: ["movie", "series"],
+      resources: [{ name: "stream", types: ["movie", "series"], idPrefixes: ["tt"] }],
+    });
+    idsourcesMock.hasSourceFor = () => true;
+    idsourcesMock.resolveForPrefixes = async () => [
+      { type: "movie", id: "tt1" },
+      { type: "series", id: "tt2", episodeId: "tt2:1:1" },
+    ];
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      ["/stream/movie/tt1.json", { status: 200, data: { streams: [{ name: "junk" }] } }],
+      ["/stream/series/tt2:1:1.json", { status: 200, data: { streams: [{}] } }],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(false);
+    expect(r.message).toContain("movie 0 valid / 1 total");
+    expect(r.message).toContain("series 0 valid / 1 total");
   });
 
   it("(b) catalog-less kitsu scraper -> IDs from Anime Kitsu ⇒ UP (prefix registry path)", async () => {
@@ -143,6 +211,23 @@ describe("probe", () => {
     ]);
     expect(r.detail.perResource.every((p) => p.ok)).toBe(true);
     expect(idsourcesMock.hasSourceFor).toBeDefined(); // external source not required
+  });
+
+  it("movie-only stream addon keeps single-target ≥1 playable stream ⇒ UP behavior", async () => {
+    const m = addon({
+      types: ["movie"],
+      resources: [{ name: "stream", types: ["movie"], idPrefixes: ["tt"] }],
+    });
+    idsourcesMock.hasSourceFor = () => true;
+    idsourcesMock.resolveForPrefixes = async () => [{ type: "movie", id: "tt1" }];
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      ["/stream/movie/tt1.json", { status: 200, data: { streams: [PLAYABLE] } }],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(r.detail.streamCounts).toEqual({ total: 1, valid: 1 });
+    expect(r.message).toContain("stream: movie 1 valid / 1 total");
   });
 
   it("(d) catalog/meta-only addon -> UP via catalog path, no stream check", async () => {
