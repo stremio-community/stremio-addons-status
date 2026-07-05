@@ -317,7 +317,7 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
           const found = await fetchCatalogCandidate(addon.baseUrl, catalogs, probeType);
           if (!found) continue;
           catalogDetails.push(`${probeType} ${found.detail}`);
-          if (found.ok && found.content && (!EPISODIC_TYPES.has(found.content.type) || metaRes)) {
+          if (found.ok && found.content) {
             streamTargets.push({ ...found.content, probeType });
           }
         } catch (e) {
