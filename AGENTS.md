@@ -43,6 +43,7 @@ Gatus merges every `*.yaml`. `00-base.yaml` is hand-written (UI, storage, alerti
 
 ## Conventions
 
+- Commit messages follow conventional commits, but never use scopes (`feat: ...`, not `feat(worker): ...`).
 - ESM TypeScript (`"type": "module"`); intra-package imports use `.js` extensions even though sources are `.ts`.
 - Structured logging via pino ([logger.ts](worker/src/logger.ts)); no `console.log`.
 - Keep this file current: when a change alters one of the non-obvious decisions above (probe verdict, proxy fallback, Gatus keys/ordering, config layout), update AGENTS.md in the same change.
