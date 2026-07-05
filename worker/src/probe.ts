@@ -200,7 +200,7 @@ function streamDetail(checks: StreamCheckResult[]): string {
 function streamVerdict(checks: StreamCheckResult[]): boolean {
   if (checks.length === 0) return false;
   if (checks.length === 1) return checks[0].ok;
-  return checks.some((c) => c.valid > 1);
+  return checks.some((c) => c.ok && c.valid > 1);
 }
 
 function missingStreamCheck(probeType: StreamProbeType, detail: string): StreamCheckResult {
