@@ -22,7 +22,7 @@ Non-obvious decisions to preserve when editing:
 Two-tier: a **liveness floor** (manifest reachable) plus **content depth** (a real resource returns usable data).
 
 - Primary resource priority: `stream` > `catalog` > `meta`. Verdict is driven by the primary; secondary resources (subtitles) only annotate, never flip a verdict.
-- A stream counts as valid only if it carries a playable source field (`STREAM_SOURCE_FIELDS`, kept in sync with the SDK `Stream` type). For stream addons, probe one movie and one series episode when the stream resource advertises/sourceably supports both. Dual-target stream verdicts require at least one target to return more than 1 valid stream; if both only return 0–1 valid streams, the addon is DOWN. Single-target stream addons keep the old "at least 1 valid stream" rule.
+- A stream counts as valid only if it carries a playable source field (`STREAM_SOURCE_FIELDS`, kept in sync with the SDK `Stream` type). For stream addons, probe one movie and one series episode when the stream resource advertises/sourceably supports both. Dual-target stream verdicts require at least one target to return more than 1 valid stream; if both only return 0–1 valid streams, the addon is DOWN. Single-target stream addons keep the old "at least 1 valid stream" rule, including non-movie/series types such as `anime`, `tv`, and `channel`.
 - `mode: "liveness-only"` (UP, not deep-checked) when there's no testable resource, config is required, or no test ID can be sourced.
 - Test IDs come from the addon's own catalog when possible; else borrowed via [idsources.ts](worker/src/idsources.ts) from external metadata addons (Cinemeta for `tt`, Anime Kitsu for `kitsu`). `resetCycle()` clears the per-cycle cache each probe cycle so IDs rotate.
 

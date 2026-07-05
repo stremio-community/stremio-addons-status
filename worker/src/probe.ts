@@ -160,10 +160,11 @@ function pickCandidate(candidates: TestContent[], types: string[]): TestContent 
   return match ?? candidates[0];
 }
 
-type StreamProbeType = "movie" | "series";
+const STREAM_PROBE_TYPES = ["movie", "series"] as const;
+type TargetedStreamProbeType = (typeof STREAM_PROBE_TYPES)[number];
 
 interface StreamProbeTarget extends TestContent {
-  probeType: StreamProbeType;
+  probeType: string;
 }
 
 interface StreamCheckResult {
@@ -174,20 +175,13 @@ interface StreamCheckResult {
   detail: string;
 }
 
-const STREAM_PROBE_TYPES = ["movie", "series"] as const;
-
-function advertisedStreamProbeTypes(types: readonly string[]): StreamProbeType[] {
+function advertisedStreamProbeTypes(types: readonly string[]): TargetedStreamProbeType[] {
   return STREAM_PROBE_TYPES.filter((type) => types.includes(type));
-}
-
-function wantedStreamProbeTypes(types: readonly string[]): StreamProbeType[] {
-  const advertised = advertisedStreamProbeTypes(types);
-  return advertised.length > 0 ? advertised : [...STREAM_PROBE_TYPES];
 }
 
 function pickCandidateForType(
   candidates: TestContent[],
-  type: StreamProbeType,
+  type: TargetedStreamProbeType,
 ): StreamProbeTarget | null {
   const candidate = candidates.find((c) => c.type === type);
   return candidate ? { ...candidate, probeType: type } : null;
@@ -203,7 +197,7 @@ function streamVerdict(checks: StreamCheckResult[]): boolean {
   return checks.some((c) => c.ok && c.valid > 1);
 }
 
-function missingStreamCheck(probeType: StreamProbeType, detail: string): StreamCheckResult {
+function missingStreamCheck(probeType: TargetedStreamProbeType, detail: string): StreamCheckResult {
   return {
     target: { probeType, type: probeType, id: "" },
     ok: false,
@@ -311,25 +305,40 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
 
   if (catalogTestable) {
     if (streamRes) {
-      const catalogDetails: string[] = [];
-      for (const probeType of wantedStreamProbeTypes(streamRes.types)) {
+      const catalogChecks: Array<{ ok: boolean; detail: string }> = [];
+      if (advertisedStreamTypes.length > 0) {
+        for (const probeType of advertisedStreamTypes) {
+          try {
+            const found = await fetchCatalogCandidate(addon.baseUrl, catalogs, probeType);
+            if (!found) continue;
+            catalogChecks.push({ ok: found.ok, detail: `${probeType} ${found.detail}` });
+            if (found.ok && found.content) {
+              streamTargets.push({ ...found.content, probeType });
+            }
+          } catch (e) {
+            catalogChecks.push({ ok: false, detail: `${probeType} ${errMsg(e)}` });
+            log.debug({ step: "catalog", type: probeType, err: errMsg(e) }, "catalog fetch threw");
+          }
+        }
+      } else {
         try {
-          const found = await fetchCatalogCandidate(addon.baseUrl, catalogs, probeType);
-          if (!found) continue;
-          catalogDetails.push(`${probeType} ${found.detail}`);
-          if (found.ok && found.content) {
-            streamTargets.push({ ...found.content, probeType });
+          const found = await fetchCatalogCandidate(addon.baseUrl, catalogs);
+          if (found) {
+            catalogChecks.push({ ok: found.ok, detail: found.detail });
+            if (found.ok && found.content) {
+              streamTargets.push({ ...found.content, probeType: found.content.type });
+            }
           }
         } catch (e) {
-          catalogDetails.push(`${probeType} ${errMsg(e)}`);
-          log.debug({ step: "catalog", type: probeType, err: errMsg(e) }, "catalog fetch threw");
+          catalogChecks.push({ ok: false, detail: errMsg(e) });
+          log.debug({ step: "catalog", err: errMsg(e) }, "catalog fetch threw");
         }
       }
-      if (catalogDetails.length > 0) {
+      if (catalogChecks.length > 0) {
         perResource.push({
           resource: "catalog",
-          ok: streamTargets.length > 0,
-          detail: catalogDetails.join(" · "),
+          ok: catalogChecks.every((check) => check.ok),
+          detail: catalogChecks.map((check) => check.detail).join(" · "),
         });
       }
       test = streamTargets[0] ?? null;
@@ -371,14 +380,25 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
   }
 
   // Catalog-less scraper: borrow IDs from an external metadata addon.
-  if (streamRes) {
+  const missingStreamProbeTypes = advertisedStreamTypes.filter(
+    (probeType) => !streamTargets.some((target) => target.probeType === probeType),
+  );
+  const needsBorrowedStreamTarget =
+    advertisedStreamTypes.length > 0
+      ? missingStreamProbeTypes.length > 0
+      : streamTargets.length === 0;
+
+  if (streamRes && needsBorrowedStreamTarget) {
     if (streamRes.idPrefixes.length && hasSourceFor(streamRes.idPrefixes)) {
       const candidates = await resolveForPrefixes(streamRes.idPrefixes);
-      const existingTypes = new Set(streamTargets.map((t) => t.probeType));
-      for (const probeType of wantedStreamProbeTypes(streamRes.types)) {
-        if (existingTypes.has(probeType)) continue;
-        const target = pickCandidateForType(candidates, probeType);
-        if (target) streamTargets.push(target);
+      if (advertisedStreamTypes.length > 0) {
+        for (const probeType of missingStreamProbeTypes) {
+          const target = pickCandidateForType(candidates, probeType);
+          if (target) streamTargets.push(target);
+        }
+      } else {
+        const target = pickCandidate(candidates, streamRes.types);
+        if (target) streamTargets.push({ ...target, probeType: target.type });
       }
       test = streamTargets[0] ?? pickCandidate(candidates, streamRes.types);
       log.debug(
@@ -434,11 +454,12 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
   let streamCounts: { total: number; valid: number } | undefined;
 
   if (streamRes) {
-    const resolvableTargets = streamTargets.filter(
-      (target) => !EPISODIC_TYPES.has(target.type) || target.episodeId,
-    );
+    const resolvableTargets =
+      advertisedStreamTypes.length > 0
+        ? streamTargets.filter((target) => !EPISODIC_TYPES.has(target.type) || target.episodeId)
+        : streamTargets.slice(0, 1);
     const missingAdvertisedTargets =
-      streamTargets.length > 0
+      advertisedStreamTypes.length > 0 && streamTargets.length > 0
         ? advertisedStreamTypes
             .filter(
               (probeType) => !resolvableTargets.some((target) => target.probeType === probeType),
