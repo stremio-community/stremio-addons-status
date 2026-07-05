@@ -119,6 +119,10 @@ async function firstEpisodeId(
   }
 }
 
+function fallbackEpisodeId(type: string, id: string): string | undefined {
+  return type === "series" && /^tt\d+$/.test(id) ? `${id}:1:1` : undefined;
+}
+
 interface CatalogProbeResult {
   content?: TestContent;
   ok: boolean;
@@ -398,8 +402,12 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
 
   // For episodic content, a stream query needs an episode id.
   for (const target of streamTargets) {
-    if (!target.episodeId && EPISODIC_TYPES.has(target.type) && metaRes) {
-      target.episodeId = await firstEpisodeId(addon.baseUrl, target.type, target.id);
+    if (!target.episodeId && EPISODIC_TYPES.has(target.type)) {
+      const resolvedEpisodeId = metaRes
+        ? await firstEpisodeId(addon.baseUrl, target.type, target.id)
+        : undefined;
+      const fallback = resolvedEpisodeId ?? fallbackEpisodeId(target.type, target.id);
+      target.episodeId = fallback;
       log.debug(
         {
           step: "testid",
@@ -408,12 +416,18 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
           id: target.id,
           episodeId: target.episodeId,
         },
-        "resolved episode ID for episodic content",
+        resolvedEpisodeId
+          ? "resolved episode ID for episodic content"
+          : fallback
+            ? "using default S1E1 episode ID for episodic content"
+            : "no episode ID resolved for episodic content",
       );
     }
   }
-  if (test && !test.episodeId && EPISODIC_TYPES.has(test.type) && metaRes) {
-    test.episodeId = await firstEpisodeId(addon.baseUrl, test.type, test.id);
+  if (test && !test.episodeId && EPISODIC_TYPES.has(test.type)) {
+    test.episodeId =
+      (metaRes ? await firstEpisodeId(addon.baseUrl, test.type, test.id) : undefined) ??
+      fallbackEpisodeId(test.type, test.id);
   }
 
   // Step 4: Validate resources.

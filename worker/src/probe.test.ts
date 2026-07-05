@@ -183,7 +183,7 @@ describe("probe", () => {
     expect(r.message).toContain("series no test ID source");
   });
 
-  it("catalog-less imdb scraper advertising movie+series ⇒ DOWN when series lacks an episode ID", async () => {
+  it("catalog-less imdb scraper advertising movie+series falls back to S1E1 when series lacks an episode ID", async () => {
     const m = addon({
       types: ["movie", "series"],
       resources: [{ name: "stream", types: ["movie", "series"], idPrefixes: ["tt"] }],
@@ -196,6 +196,35 @@ describe("probe", () => {
     router = routes([
       ["/manifest.json", manifestOk(m.manifest)],
       ["/stream/movie/tt1.json", { status: 200, data: { streams: [PLAYABLE] } }],
+      [
+        "/meta/series/tt2.json",
+        { status: 200, data: { meta: { id: "tt2", type: "series", name: "T" } } },
+      ],
+      ["/stream/series/tt2:1:1.json", { status: 200, data: { streams: [PLAYABLE] } }],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(false);
+    expect(r.message).toContain("movie 1 valid / 1 total");
+    expect(r.message).toContain("series 1 valid / 1 total");
+  });
+
+  it("catalog-less non-imdb scraper advertising movie+series ⇒ DOWN when series lacks an episode ID", async () => {
+    const m = addon({
+      types: ["movie", "series"],
+      resources: [{ name: "stream", types: ["movie", "series"], idPrefixes: ["custom"] }],
+    });
+    idsourcesMock.hasSourceFor = () => true;
+    idsourcesMock.resolveForPrefixes = async () => [
+      { type: "movie", id: "custom-movie" },
+      { type: "series", id: "custom-series" },
+    ];
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      ["/stream/movie/custom-movie.json", { status: 200, data: { streams: [PLAYABLE] } }],
+      [
+        "/meta/series/custom-series.json",
+        { status: 200, data: { meta: { id: "custom-series", type: "series", name: "T" } } },
+      ],
     ]);
     const r = await probe(m);
     expect(r.success).toBe(false);
