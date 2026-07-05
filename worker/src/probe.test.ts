@@ -166,10 +166,47 @@ describe("probe", () => {
     expect(r.message).toContain("series 0 valid / 1 total");
   });
 
+  it("catalog-less imdb scraper advertising movie+series ⇒ DOWN when only one single-link target is sourceable", async () => {
+    const m = addon({
+      types: ["movie", "series"],
+      resources: [{ name: "stream", types: ["movie", "series"], idPrefixes: ["tt"] }],
+    });
+    idsourcesMock.hasSourceFor = () => true;
+    idsourcesMock.resolveForPrefixes = async () => [{ type: "movie", id: "tt1" }];
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      ["/stream/movie/tt1.json", { status: 200, data: { streams: [PLAYABLE] } }],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(false);
+    expect(r.message).toContain("movie 1 valid / 1 total");
+    expect(r.message).toContain("series no test ID source");
+  });
+
+  it("catalog-less imdb scraper advertising movie+series ⇒ DOWN when series lacks an episode ID", async () => {
+    const m = addon({
+      types: ["movie", "series"],
+      resources: [{ name: "stream", types: ["movie", "series"], idPrefixes: ["tt"] }],
+    });
+    idsourcesMock.hasSourceFor = () => true;
+    idsourcesMock.resolveForPrefixes = async () => [
+      { type: "movie", id: "tt1" },
+      { type: "series", id: "tt2" },
+    ];
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      ["/stream/movie/tt1.json", { status: 200, data: { streams: [PLAYABLE] } }],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(false);
+    expect(r.message).toContain("movie 1 valid / 1 total");
+    expect(r.message).toContain("series no episode ID");
+  });
+
   it("(b) catalog-less kitsu scraper -> IDs from Anime Kitsu ⇒ UP (prefix registry path)", async () => {
     const m = addon({
-      types: ["movie", "series", "anime"],
-      resources: [{ name: "stream", types: ["movie", "series", "anime"], idPrefixes: ["kitsu"] }],
+      types: ["anime"],
+      resources: [{ name: "stream", types: ["anime"], idPrefixes: ["kitsu"] }],
     });
     idsourcesMock.hasSourceFor = () => true;
     idsourcesMock.resolveForPrefixes = async () => [

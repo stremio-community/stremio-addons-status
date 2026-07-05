@@ -172,8 +172,12 @@ interface StreamCheckResult {
 
 const STREAM_PROBE_TYPES = ["movie", "series"] as const;
 
-function streamProbeTypes(types: readonly string[]): StreamProbeType[] {
-  const advertised = STREAM_PROBE_TYPES.filter((type) => types.includes(type));
+function advertisedStreamProbeTypes(types: readonly string[]): StreamProbeType[] {
+  return STREAM_PROBE_TYPES.filter((type) => types.includes(type));
+}
+
+function wantedStreamProbeTypes(types: readonly string[]): StreamProbeType[] {
+  const advertised = advertisedStreamProbeTypes(types);
   return advertised.length > 0 ? advertised : [...STREAM_PROBE_TYPES];
 }
 
@@ -193,6 +197,16 @@ function streamVerdict(checks: StreamCheckResult[]): boolean {
   if (checks.length === 0) return false;
   if (checks.length === 1) return checks[0].ok;
   return checks.some((c) => c.valid > 1);
+}
+
+function missingStreamCheck(probeType: StreamProbeType, detail: string): StreamCheckResult {
+  return {
+    target: { probeType, type: probeType, id: "" },
+    ok: false,
+    total: 0,
+    valid: 0,
+    detail,
+  };
 }
 
 function result(
@@ -273,6 +287,7 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
   const streamRes = norm.find((r) => r.name === "stream");
   const metaRes = norm.find((r) => r.name === "meta");
   const catalogTestable = catalogs.length > 0 && norm.some((r) => r.name === "catalog");
+  const advertisedStreamTypes = streamRes ? advertisedStreamProbeTypes(streamRes.types) : [];
 
   // Primary content resource: stream > catalog > meta.
   const primary: "stream" | "catalog" | "meta" | null = streamRes
@@ -293,7 +308,7 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
   if (catalogTestable) {
     if (streamRes) {
       const catalogDetails: string[] = [];
-      for (const probeType of streamProbeTypes(streamRes.types)) {
+      for (const probeType of wantedStreamProbeTypes(streamRes.types)) {
         try {
           const found = await fetchCatalogCandidate(addon.baseUrl, catalogs, probeType);
           if (!found) continue;
@@ -356,7 +371,7 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
     if (streamRes.idPrefixes.length && hasSourceFor(streamRes.idPrefixes)) {
       const candidates = await resolveForPrefixes(streamRes.idPrefixes);
       const existingTypes = new Set(streamTargets.map((t) => t.probeType));
-      for (const probeType of streamProbeTypes(streamRes.types)) {
+      for (const probeType of wantedStreamProbeTypes(streamRes.types)) {
         if (existingTypes.has(probeType)) continue;
         const target = pickCandidateForType(candidates, probeType);
         if (target) streamTargets.push(target);
@@ -405,16 +420,27 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
   let streamCounts: { total: number; valid: number } | undefined;
 
   if (streamRes) {
-    const probeTargets = streamTargets.filter(
+    const resolvableTargets = streamTargets.filter(
       (target) => !EPISODIC_TYPES.has(target.type) || target.episodeId,
     );
-    if (probeTargets.length === 0) {
+    const missingAdvertisedTargets =
+      streamTargets.length > 0
+        ? advertisedStreamTypes
+            .filter(
+              (probeType) => !resolvableTargets.some((target) => target.probeType === probeType),
+            )
+            .map((probeType) => {
+              const sourced = streamTargets.some((target) => target.probeType === probeType);
+              return missingStreamCheck(probeType, sourced ? "no episode ID" : "no test ID source");
+            })
+        : [];
+    if (resolvableTargets.length === 0 && missingAdvertisedTargets.length === 0) {
       // No own catalog and no ID source for its prefixes.
       return livenessOnly("no test ID source for stream prefixes");
     }
 
-    const streamChecks: StreamCheckResult[] = [];
-    for (const target of probeTargets) {
+    const streamChecks: StreamCheckResult[] = [...missingAdvertisedTargets];
+    for (const target of resolvableTargets) {
       const type = target.type;
       const id = target.episodeId ?? target.id;
       try {
