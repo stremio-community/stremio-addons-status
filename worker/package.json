@@ -3,11 +3,12 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Deep-probes Stremio addons and pushes verdicts to Gatus.",
+  "description": "Deep-probes Stremio addons and pushes verdicts to Kener.",
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
     "start:dev": "tsx watch --env-file-if-exists=../.env --env-file-if-exists=.env.dev src/index.ts",
+    "bootstrap:kener": "tsx --env-file-if-exists=../.env --env-file-if-exists=.env.dev scripts/bootstrap-kener.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },

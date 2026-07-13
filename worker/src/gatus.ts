@@ -1,3 +1,5 @@
+// Legacy Gatus integration, kept only for the dual-push migration window (enabled when GATUS_URL + PUSH_TOKEN are set).
+// Delete this file, the gatus/ config dir, the compose service, and the yaml dependency after the Kener cutover.
 import { writeFile, rename, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { stringify } from "yaml";

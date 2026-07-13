@@ -1,6 +1,12 @@
 import { config } from "./config.js";
 import { fetchAllAddons } from "./api.js";
-import { buildEndpoints, writeConfig, pushResult, type EndpointDescriptor } from "./gatus.js";
+import { buildMonitors, reconcileMonitors, pushResult, type MonitorDescriptor } from "./kener.js";
+import {
+  buildEndpoints,
+  writeConfig,
+  pushResult as pushGatusResult,
+  type EndpointDescriptor,
+} from "./gatus.js";
 import { probe } from "./probe.js";
 import { resetCycle } from "./idsources.js";
 import { mapLimit } from "./concurrency.js";
@@ -8,31 +14,37 @@ import { errMsg, sleep } from "./utils.js";
 import { logger } from "./logger.js";
 import type { ProbeResult } from "./types.js";
 
-let endpoints: EndpointDescriptor[] = [];
+let monitors: MonitorDescriptor[] = [];
+// Legacy Gatus dual-push (migration window): endpoint descriptors by addon uuid, empty when Gatus push is disabled.
+let gatusEndpoints = new Map<string, EndpointDescriptor>();
+
+const gatusEnabled = Boolean(config.gatusUrl && config.pushToken);
 
 async function refreshList(): Promise<void> {
   const addons = await fetchAllAddons();
-  endpoints = buildEndpoints(addons);
-  await writeConfig(endpoints);
-  logger.info(
-    { addons: addons.length, endpoints: endpoints.length },
-    "list refreshed; wrote endpoints config",
-  );
+  monitors = buildMonitors(addons);
+  await reconcileMonitors(monitors);
+  if (gatusEnabled) {
+    const endpoints = buildEndpoints(addons);
+    await writeConfig(endpoints);
+    gatusEndpoints = new Map(endpoints.map((e) => [e.addon.uuid, e]));
+  }
+  logger.info({ addons: addons.length, monitors: monitors.length }, "list refreshed");
 }
 
 async function runCycle(): Promise<void> {
-  if (endpoints.length === 0) return;
+  if (monitors.length === 0) return;
   resetCycle(); // rotate/refresh cached ID-source content each cycle
   const started = Date.now();
   let up = 0;
   let down = 0;
   let pushErrors = 0;
 
-  await mapLimit(endpoints, config.concurrency, async (ep) => {
-    const log = logger.child({ addon: ep.addon.slug });
+  await mapLimit(monitors, config.concurrency, async (m) => {
+    const log = logger.child({ addon: m.addon.slug });
     let r: ProbeResult;
     try {
-      r = await probe(ep.addon);
+      r = await probe(m.addon);
     } catch (e) {
       r = {
         success: false,
@@ -60,21 +72,35 @@ async function runCycle(): Promise<void> {
     );
 
     try {
-      const status = await pushResult(ep, r);
+      const status = await pushResult(m, r);
       if (status >= 400) {
         pushErrors++;
-        log.error({ key: ep.key, status }, "push failed");
+        log.error({ tag: m.tag, status }, "push failed");
       } else {
-        log.debug({ key: ep.key, status }, "pushed verdict to Gatus");
+        log.debug({ tag: m.tag, status }, "pushed verdict to Kener");
       }
     } catch (e) {
       pushErrors++;
-      log.error({ key: ep.key, err: errMsg(e) }, "push error");
+      log.error({ tag: m.tag, err: errMsg(e) }, "push error");
+    }
+
+    const gatusEndpoint = gatusEndpoints.get(m.addon.uuid);
+    if (gatusEndpoint) {
+      try {
+        const status = await pushGatusResult(gatusEndpoint, r);
+        if (status >= 400) {
+          pushErrors++;
+          log.error({ key: gatusEndpoint.key, status }, "gatus push failed");
+        }
+      } catch (e) {
+        pushErrors++;
+        log.error({ key: gatusEndpoint.key, err: errMsg(e) }, "gatus push error");
+      }
     }
   });
 
   logger.info(
-    { checked: endpoints.length, up, down, pushErrors, durationMs: Date.now() - started },
+    { checked: monitors.length, up, down, pushErrors, durationMs: Date.now() - started },
     "cycle complete",
   );
 }
@@ -103,8 +129,8 @@ async function listLoop(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  if (!config.pushToken) {
-    logger.fatal("PUSH_TOKEN is required");
+  if (!config.kenerApiToken) {
+    logger.fatal("KENER_API_TOKEN is required");
     process.exit(1);
   }
   logger.info(
@@ -113,11 +139,12 @@ async function main(): Promise<void> {
       concurrency: config.concurrency,
       probeInterval: config.probeInterval,
       listRefresh: config.listRefresh,
+      gatusDualPush: gatusEnabled,
     },
     "starting worker",
   );
 
-  // Retry initial list load until the API is reachable.
+  // Retry initial list load until both the addons API and Kener are reachable.
   for (;;) {
     try {
       await refreshList();
