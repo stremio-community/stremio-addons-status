@@ -27,11 +27,10 @@ docker compose up -d
 
 One-time Kener bootstrap after the first start:
 
-1. Create Kener's database: `docker compose exec postgres createdb -U $POSTGRES_USER kener` (then restart the kener service).
-2. Open http://localhost:3002/manage, run the setup wizard, and create the admin user.
-3. Create an API key under Settings → API Keys (monitor + page write access) and put it in `.env` as `KENER_API_TOKEN`.
-4. Configure site branding and alerting (Triggers, e.g. a Discord webhook) in the manage UI.
-5. Create the static platform/debrid/infrastructure monitors: `pnpm -F worker bootstrap:kener`.
+1. Open http://localhost:3002/manage, run the setup wizard, and create the admin user.
+2. Create an API key under Settings → API Keys (monitor + page write access) and put it in `.env` as `KENER_API_TOKEN`.
+3. Configure site branding and alerting (Triggers, e.g. a Discord webhook) in the manage UI.
+4. Create the static platform/debrid/infrastructure monitors: `pnpm -F worker bootstrap:kener`.
 
 - **Status page**: http://localhost:3002. Addons first, then addon instances and the static platform checks; open a monitor to see its uptime history.
 - **Badges**: `.../badge/{tag}/status` and `.../badge/{tag}/uptime`
@@ -50,7 +49,3 @@ pnpm -F worker start:dev                           # worker on the host, watches
 ```
 
 `start:dev` loads the repo-root `.env` first, then `worker/.env.dev` on top. The dev file only overrides what differs when the worker runs on the host instead of inside compose (Kener URL, proxy); see `worker/.env.example` for details.
-
-## Gatus migration
-
-The status page used to be stock [Gatus](https://github.com/TwiN/gatus). The gatus service, its config under `gatus/config.d/`, and the worker's dual-push (`GATUS_URL` + `PUSH_TOKEN`) are kept only for the migration window and will be removed after cutover. The old `gatus` Postgres database stays untouched alongside Kener's.

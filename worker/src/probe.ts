@@ -394,7 +394,7 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
   }
 
   // Manifest up but primary content failed.
-  // Push the full per-resource breakdown (not just the primary) so Gatus's failure tooltip shows exactly what was probed and what each resource returned.
+  // Build the full per-resource breakdown (not just the primary) so the failure log shows exactly what was probed and what each resource returned.
   const breakdown = perResource.map((r) => `${r.resource}: ${r.detail}`).join(" · ");
   const downMsg = breakdown ? `manifest up · ${breakdown}` : `manifest up · ${primary} check failed`;
   log.debug(

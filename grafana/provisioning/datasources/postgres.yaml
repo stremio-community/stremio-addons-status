@@ -9,7 +9,7 @@ datasources:
     user: ${POSTGRES_USER}
     isDefault: true
     jsonData:
-      database: ${KENER_DB}
+      database: ${POSTGRES_DB}
       sslmode: disable
       postgresVersion: 1600
     secureJsonData:

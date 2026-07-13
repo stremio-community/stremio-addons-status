@@ -2,13 +2,7 @@ export const config = {
   apiBase: (process.env.API_BASE || "https://stremio-addons.net/api/v0").replace(/\/$/, ""),
   kenerUrl: (process.env.KENER_URL || "http://kener:3000").replace(/\/$/, ""),
   kenerApiToken: process.env.KENER_API_TOKEN || "",
-  // Legacy Gatus push, kept for the dual-push migration window; empty GATUS_URL disables it.
-  gatusUrl: (process.env.GATUS_URL || "").replace(/\/$/, ""),
-  pushToken: process.env.PUSH_TOKEN || "",
   proxyUrl: process.env.PROXY_URL || "",
-  // Empty = Discord disabled: the worker omits the alert block from generated endpoints entirely.
-  discordWebhookUrl: process.env.DISCORD_WEBHOOK_URL || "",
-  endpointsConfigPath: process.env.ENDPOINTS_CONFIG_PATH || "/config/10-endpoints.yaml",
 
   probeInterval: parseDuration(process.env.PROBE_INTERVAL, 15 * 60_000),
   listRefresh: parseDuration(process.env.LIST_REFRESH, 60 * 60_000),

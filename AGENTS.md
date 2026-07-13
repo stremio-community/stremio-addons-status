@@ -6,7 +6,7 @@ A status page for Stremio addons that checks whether an addon **actually works**
 
 Data flow: `stremio-addons.net API → worker → Kener (status page + alerts) → Postgres → Grafana`.
 
-pnpm workspace; the only package is `worker/`. See `package.json` scripts for commands. Local dev: run infra in Docker, worker on host (`docker compose up -d postgres redis kener grafana warp` + `pnpm -F worker start:dev`). Production is `docker compose up -d`. Kener needs a one-time bootstrap (database, admin user, API key, static monitors) — see README.
+pnpm workspace; the only package is `worker/`. See `package.json` scripts for commands. Local dev: run infra in Docker, worker on host (`docker compose up -d postgres redis kener grafana warp` + `pnpm -F worker start:dev`). Production is `docker compose up -d`. Kener needs a one-time bootstrap (admin user, API key, static monitors) — see README.
 
 ## Architecture
 
@@ -44,10 +44,6 @@ The worker owns one Kener monitor per addon and pushes verdicts as data points (
 ### Static monitors ([bootstrap-kener.ts](worker/scripts/bootstrap-kener.ts))
 
 The Stremio Platform / Debrid Services / Infrastructure checks are native Kener API monitors on a 5m cron, created by the idempotent `pnpm -F worker bootstrap:kener`. They probe directly (Kener has no per-monitor SOCKS proxy); if one flaps from datacenter-IP blocking, move that check into the worker's push path instead.
-
-### Legacy Gatus (dual-push migration window)
-
-[gatus.ts](worker/src/gatus.ts), the `gatus/` config dir, and the gatus compose service survive only for the migration: when `GATUS_URL` + `PUSH_TOKEN` are set the worker also regenerates `gatus/config.d/10-endpoints.yaml` and pushes verdicts to Gatus. Delete all of it (plus the `yaml` dependency and the Gatus env vars) after cutover.
 
 ## Conventions
 

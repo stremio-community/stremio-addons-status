@@ -1,12 +1,6 @@
 import { config } from "./config.js";
 import { fetchAllAddons } from "./api.js";
 import { buildMonitors, reconcileMonitors, pushResult, type MonitorDescriptor } from "./kener.js";
-import {
-  buildEndpoints,
-  writeConfig,
-  pushResult as pushGatusResult,
-  type EndpointDescriptor,
-} from "./gatus.js";
 import { probe } from "./probe.js";
 import { resetCycle } from "./idsources.js";
 import { mapLimit } from "./concurrency.js";
@@ -15,20 +9,11 @@ import { logger } from "./logger.js";
 import type { ProbeResult } from "./types.js";
 
 let monitors: MonitorDescriptor[] = [];
-// Legacy Gatus dual-push (migration window): endpoint descriptors by addon uuid, empty when Gatus push is disabled.
-let gatusEndpoints = new Map<string, EndpointDescriptor>();
-
-const gatusEnabled = Boolean(config.gatusUrl && config.pushToken);
 
 async function refreshList(): Promise<void> {
   const addons = await fetchAllAddons();
   monitors = buildMonitors(addons);
   await reconcileMonitors(monitors);
-  if (gatusEnabled) {
-    const endpoints = buildEndpoints(addons);
-    await writeConfig(endpoints);
-    gatusEndpoints = new Map(endpoints.map((e) => [e.addon.uuid, e]));
-  }
   logger.info({ addons: addons.length, monitors: monitors.length }, "list refreshed");
 }
 
@@ -83,20 +68,6 @@ async function runCycle(): Promise<void> {
       pushErrors++;
       log.error({ tag: m.tag, err: errMsg(e) }, "push error");
     }
-
-    const gatusEndpoint = gatusEndpoints.get(m.addon.uuid);
-    if (gatusEndpoint) {
-      try {
-        const status = await pushGatusResult(gatusEndpoint, r);
-        if (status >= 400) {
-          pushErrors++;
-          log.error({ key: gatusEndpoint.key, status }, "gatus push failed");
-        }
-      } catch (e) {
-        pushErrors++;
-        log.error({ key: gatusEndpoint.key, err: errMsg(e) }, "gatus push error");
-      }
-    }
   });
 
   logger.info(
@@ -139,7 +110,6 @@ async function main(): Promise<void> {
       concurrency: config.concurrency,
       probeInterval: config.probeInterval,
       listRefresh: config.listRefresh,
-      gatusDualPush: gatusEnabled,
     },
     "starting worker",
   );

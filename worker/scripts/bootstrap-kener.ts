@@ -1,6 +1,6 @@
 /**
  * One-time (idempotent, safe to re-run) bootstrap of the static Kener monitors:
- * the Stremio Platform / Debrid Services / Infrastructure checks that Gatus used to define in 00-base.yaml.
+ * the Stremio Platform / Debrid Services / Infrastructure checks.
  * Kener probes these itself (API monitors on a 5m cron); the worker never touches them beyond preserving their home-page positions.
  *
  * These probe directly (no WARP proxy: Kener has no per-monitor SOCKS support).
@@ -9,7 +9,7 @@
  * Usage: pnpm -F worker bootstrap:kener  (needs KENER_URL + KENER_API_TOKEN, see .env.example)
  */
 
-const KENER_URL = (process.env.KENER_URL || "http://localhost:3001").replace(/\/$/, "");
+const KENER_URL = (process.env.KENER_URL || "http://localhost:3002").replace(/\/$/, "");
 const KENER_API_TOKEN = process.env.KENER_API_TOKEN || "";
 
 interface StaticMonitor {
