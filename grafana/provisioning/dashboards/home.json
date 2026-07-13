@@ -9,14 +9,14 @@
   "version": 1,
   "schemaVersion": 39,
   "refresh": "5m",
-  "tags": ["stremio", "gatus"],
+  "tags": ["stremio", "kener"],
   "templating": { "list": [] },
   "panels": [
     {
       "type": "stat",
       "title": "Fleet uptime (selected range)",
       "gridPos": { "h": 5, "w": 6, "x": 0, "y": 0 },
-      "datasource": { "type": "postgres", "uid": "gatus-postgres" },
+      "datasource": { "type": "postgres", "uid": "kener-postgres" },
       "fieldConfig": {
         "defaults": {
           "unit": "percent",
@@ -40,7 +40,7 @@
         {
           "refId": "A",
           "format": "table",
-          "rawSql": "SELECT 100.0 * sum(successful_executions) / NULLIF(sum(total_executions), 0) AS uptime FROM endpoint_uptimes WHERE $__unixEpochFilter(hour_unix_timestamp)"
+          "rawSql": "SELECT 100.0 * count(*) FILTER (WHERE d.status = 'UP') / NULLIF(count(*) FILTER (WHERE d.status IN ('UP', 'DOWN', 'DEGRADED')), 0) AS uptime FROM monitoring_data d JOIN monitors m ON m.tag = d.monitor_tag WHERE m.category_name IN ('Addons', 'Addon Instances') AND m.is_hidden = 'NO' AND $__unixEpochFilter(d.timestamp)"
         }
       ]
     },
@@ -48,7 +48,7 @@
       "type": "stat",
       "title": "Addons UP (latest check)",
       "gridPos": { "h": 5, "w": 6, "x": 6, "y": 0 },
-      "datasource": { "type": "postgres", "uid": "gatus-postgres" },
+      "datasource": { "type": "postgres", "uid": "kener-postgres" },
       "fieldConfig": {
         "defaults": { "unit": "none", "color": { "mode": "fixed", "fixedColor": "green" } }
       },
@@ -61,7 +61,7 @@
         {
           "refId": "A",
           "format": "table",
-          "rawSql": "SELECT count(*) AS up FROM endpoints e JOIN LATERAL (SELECT success FROM endpoint_results er WHERE er.endpoint_id = e.endpoint_id ORDER BY er.timestamp DESC LIMIT 1) r ON true WHERE r.success"
+          "rawSql": "SELECT count(*) AS up FROM monitors m JOIN LATERAL (SELECT status FROM monitoring_data d WHERE d.monitor_tag = m.tag ORDER BY d.timestamp DESC LIMIT 1) r ON true WHERE m.category_name IN ('Addons', 'Addon Instances') AND m.is_hidden = 'NO' AND m.status = 'ACTIVE' AND r.status = 'UP'"
         }
       ]
     },
@@ -69,7 +69,7 @@
       "type": "stat",
       "title": "Addons DOWN (latest check)",
       "gridPos": { "h": 5, "w": 6, "x": 12, "y": 0 },
-      "datasource": { "type": "postgres", "uid": "gatus-postgres" },
+      "datasource": { "type": "postgres", "uid": "kener-postgres" },
       "fieldConfig": {
         "defaults": {
           "unit": "none",
@@ -91,7 +91,7 @@
         {
           "refId": "A",
           "format": "table",
-          "rawSql": "SELECT count(*) AS down FROM endpoints e JOIN LATERAL (SELECT success FROM endpoint_results er WHERE er.endpoint_id = e.endpoint_id ORDER BY er.timestamp DESC LIMIT 1) r ON true WHERE NOT r.success"
+          "rawSql": "SELECT count(*) AS down FROM monitors m JOIN LATERAL (SELECT status FROM monitoring_data d WHERE d.monitor_tag = m.tag ORDER BY d.timestamp DESC LIMIT 1) r ON true WHERE m.category_name IN ('Addons', 'Addon Instances') AND m.is_hidden = 'NO' AND m.status = 'ACTIVE' AND r.status = 'DOWN'"
         }
       ]
     },
@@ -99,7 +99,7 @@
       "type": "stat",
       "title": "Monitored addons",
       "gridPos": { "h": 5, "w": 6, "x": 18, "y": 0 },
-      "datasource": { "type": "postgres", "uid": "gatus-postgres" },
+      "datasource": { "type": "postgres", "uid": "kener-postgres" },
       "fieldConfig": {
         "defaults": { "unit": "none", "color": { "mode": "fixed", "fixedColor": "blue" } }
       },
@@ -109,14 +109,14 @@
         "graphMode": "none"
       },
       "targets": [
-        { "refId": "A", "format": "table", "rawSql": "SELECT count(*) AS total FROM endpoints" }
+        { "refId": "A", "format": "table", "rawSql": "SELECT count(*) AS total FROM monitors WHERE category_name IN ('Addons', 'Addon Instances') AND is_hidden = 'NO' AND status = 'ACTIVE'" }
       ]
     },
     {
       "type": "timeseries",
       "title": "Fleet uptime over time",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 5 },
-      "datasource": { "type": "postgres", "uid": "gatus-postgres" },
+      "datasource": { "type": "postgres", "uid": "kener-postgres" },
       "fieldConfig": {
         "defaults": {
           "unit": "percent",
@@ -129,7 +129,7 @@
         {
           "refId": "A",
           "format": "time_series",
-          "rawSql": "SELECT to_timestamp(hour_unix_timestamp) AS time, 100.0 * sum(successful_executions) / NULLIF(sum(total_executions), 0) AS \"uptime %\" FROM endpoint_uptimes WHERE $__unixEpochFilter(hour_unix_timestamp) GROUP BY 1 ORDER BY 1"
+          "rawSql": "SELECT date_trunc('hour', to_timestamp(d.timestamp)) AS time, 100.0 * count(*) FILTER (WHERE d.status = 'UP') / NULLIF(count(*) FILTER (WHERE d.status IN ('UP', 'DOWN', 'DEGRADED')), 0) AS \"uptime %\" FROM monitoring_data d JOIN monitors m ON m.tag = d.monitor_tag WHERE m.category_name IN ('Addons', 'Addon Instances') AND m.is_hidden = 'NO' AND $__unixEpochFilter(d.timestamp) GROUP BY 1 ORDER BY 1"
         }
       ]
     },
@@ -137,7 +137,7 @@
       "type": "timeseries",
       "title": "Average response time over time",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 5 },
-      "datasource": { "type": "postgres", "uid": "gatus-postgres" },
+      "datasource": { "type": "postgres", "uid": "kener-postgres" },
       "fieldConfig": {
         "defaults": { "unit": "ms", "custom": { "drawStyle": "line", "fillOpacity": 10 } }
       },
@@ -145,7 +145,7 @@
         {
           "refId": "A",
           "format": "time_series",
-          "rawSql": "SELECT to_timestamp(hour_unix_timestamp) AS time, sum(total_response_time)::float / NULLIF(sum(total_executions), 0) AS \"avg response (ms)\" FROM endpoint_uptimes WHERE $__unixEpochFilter(hour_unix_timestamp) GROUP BY 1 ORDER BY 1"
+          "rawSql": "SELECT date_trunc('hour', to_timestamp(d.timestamp)) AS time, avg(d.latency) AS \"avg response (ms)\" FROM monitoring_data d JOIN monitors m ON m.tag = d.monitor_tag WHERE m.category_name IN ('Addons', 'Addon Instances') AND m.is_hidden = 'NO' AND $__unixEpochFilter(d.timestamp) GROUP BY 1 ORDER BY 1"
         }
       ]
     },
@@ -153,7 +153,7 @@
       "type": "table",
       "title": "Health by category",
       "gridPos": { "h": 10, "w": 24, "x": 0, "y": 13 },
-      "datasource": { "type": "postgres", "uid": "gatus-postgres" },
+      "datasource": { "type": "postgres", "uid": "kener-postgres" },
       "fieldConfig": {
         "defaults": {},
         "overrides": [
@@ -185,7 +185,7 @@
         {
           "refId": "A",
           "format": "table",
-          "rawSql": "SELECT e.endpoint_group AS \"Category\", count(*) AS \"Addons\", count(*) FILTER (WHERE r.success) AS \"Up\", count(*) FILTER (WHERE NOT r.success) AS \"Down\", round(100.0 * count(*) FILTER (WHERE r.success) / NULLIF(count(*), 0), 1) AS \"Latest Up %\" FROM endpoints e JOIN LATERAL (SELECT success FROM endpoint_results er WHERE er.endpoint_id = e.endpoint_id ORDER BY er.timestamp DESC LIMIT 1) r ON true GROUP BY 1 ORDER BY 5 ASC NULLS LAST"
+          "rawSql": "SELECT m.category_name AS \"Category\", count(*) AS \"Addons\", count(*) FILTER (WHERE r.status = 'UP') AS \"Up\", count(*) FILTER (WHERE r.status = 'DOWN') AS \"Down\", round(100.0 * count(*) FILTER (WHERE r.status = 'UP') / NULLIF(count(*), 0), 1) AS \"Latest Up %\" FROM monitors m JOIN LATERAL (SELECT status FROM monitoring_data d WHERE d.monitor_tag = m.tag ORDER BY d.timestamp DESC LIMIT 1) r ON true WHERE m.is_hidden = 'NO' AND m.status = 'ACTIVE' GROUP BY 1 ORDER BY 5 ASC NULLS LAST"
         }
       ]
     }

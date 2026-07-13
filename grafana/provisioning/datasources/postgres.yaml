@@ -1,15 +1,15 @@
 apiVersion: 1
 
 datasources:
-  - name: Gatus
+  - name: Kener
     type: postgres
-    uid: gatus-postgres
+    uid: kener-postgres
     access: proxy
     url: postgres:5432
     user: ${POSTGRES_USER}
     isDefault: true
     jsonData:
-      database: ${POSTGRES_DB}
+      database: ${KENER_DB}
       sslmode: disable
       postgresVersion: 1600
     secureJsonData:
