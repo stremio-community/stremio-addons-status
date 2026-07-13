@@ -32,6 +32,39 @@ services:
       timeout: 5s
       retries: 5
 
+  redis:
+    # Required by Kener (BullMQ queues + scheduler).
+    image: redis:7-alpine
+    restart: no
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kener:
+    # Pinned version (dev and prod): the hub reads Kener's internal dashboard-apis endpoint, so upgrades must be deliberate.
+    image: rajnandan1/kener:v4.1.2
+    restart: no
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      # Kener lives in its own database inside the shared Postgres instance; create it once with:
+      #   docker compose exec postgres createdb -U ${POSTGRES_USER} ${KENER_DB}
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${KENER_DB}
+      REDIS_URL: redis://redis:6379
+      KENER_SECRET_KEY: ${KENER_SECRET_KEY}
+      # Public URL of the status page; required for CSRF protection.
+      ORIGIN: ${KENER_PUBLIC_URL}
+    ports:
+      - "${KENER_PORT}:3000"
+
+  # Legacy status page, kept during the Kener migration's dual-push window; remove after cutover.
   gatus:
     image: ghcr.io/twin/gatus:stable
     restart: no
@@ -60,10 +93,13 @@ services:
       dockerfile: worker/Dockerfile
     restart: no
     depends_on:
-      postgres:
-        condition: service_healthy
+      kener:
+        condition: service_started
     environment:
       API_BASE: ${API_BASE}
+      KENER_URL: http://kener:3000
+      KENER_API_TOKEN: ${KENER_API_TOKEN}
+      # Legacy Gatus push (dual-push window); remove after cutover.
       GATUS_URL: http://gatus:8080
       PUSH_TOKEN: ${PUSH_TOKEN}
       PROXY_URL: ${PROXY_URL}
@@ -85,7 +121,7 @@ services:
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
+      KENER_DB: ${KENER_DB}
       # Anonymous read-only viewing; no sign-up, no login form.
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
@@ -102,4 +138,5 @@ services:
 volumes:
   warp-data:
   postgres-data:
+  redis-data:
   grafana-data:
