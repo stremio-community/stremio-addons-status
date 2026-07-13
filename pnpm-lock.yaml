@@ -32,9 +32,6 @@ importers:
       undici:
         specifier: ^8.5.0
         version: 8.5.0
-      yaml:
-        specifier: ^2.7.0
-        version: 2.9.0
     devDependencies:
       '@types/node':
         specifier: ^24.0.0
@@ -1333,6 +1330,7 @@ snapshots:
 
   wrappy@1.0.2: {}
 
-  yaml@2.9.0: {}
+  yaml@2.9.0:
+    optional: true
 
   yocto-queue@1.2.2: {}

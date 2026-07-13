@@ -1,6 +1,12 @@
 import { config } from "./config.js";
 import { fetchAllAddons } from "./api.js";
-import { buildEndpoints, writeConfig, pushResult, type EndpointDescriptor } from "./gatus.js";
+import {
+  buildMonitors,
+  reconcile,
+  reconcileStaticMonitors,
+  pushVerdict,
+  type MonitorDescriptor,
+} from "./kuvasz.js";
 import { probe } from "./probe.js";
 import { resetCycle } from "./idsources.js";
 import { mapLimit } from "./concurrency.js";
@@ -8,31 +14,32 @@ import { errMsg, sleep } from "./utils.js";
 import { logger } from "./logger.js";
 import type { ProbeResult } from "./types.js";
 
-let endpoints: EndpointDescriptor[] = [];
+let monitors: MonitorDescriptor[] = [];
 
 async function refreshList(): Promise<void> {
   const addons = await fetchAllAddons();
-  endpoints = buildEndpoints(addons);
-  await writeConfig(endpoints);
+  monitors = buildMonitors(addons);
+  await reconcile(monitors);
+  await reconcileStaticMonitors();
   logger.info(
-    { addons: addons.length, endpoints: endpoints.length },
-    "list refreshed; wrote endpoints config",
+    { addons: addons.length, monitors: monitors.length },
+    "list refreshed; monitors reconciled",
   );
 }
 
 async function runCycle(): Promise<void> {
-  if (endpoints.length === 0) return;
+  if (monitors.length === 0) return;
   resetCycle(); // rotate/refresh cached ID-source content each cycle
   const started = Date.now();
   let up = 0;
   let down = 0;
   let pushErrors = 0;
 
-  await mapLimit(endpoints, config.concurrency, async (ep) => {
-    const log = logger.child({ addon: ep.addon.slug });
+  await mapLimit(monitors, config.concurrency, async (m) => {
+    const log = logger.child({ addon: m.addon.slug });
     let r: ProbeResult;
     try {
-      r = await probe(ep.addon);
+      r = await probe(m.addon);
     } catch (e) {
       r = {
         success: false,
@@ -60,21 +67,21 @@ async function runCycle(): Promise<void> {
     );
 
     try {
-      const status = await pushResult(ep, r);
+      const status = await pushVerdict(m, r);
       if (status >= 400) {
         pushErrors++;
-        log.error({ key: ep.key, status }, "push failed");
+        log.error({ monitor: m.name, status }, "push failed");
       } else {
-        log.debug({ key: ep.key, status }, "pushed verdict to Gatus");
+        log.debug({ monitor: m.name, status }, "pushed verdict to Kuvasz");
       }
     } catch (e) {
       pushErrors++;
-      log.error({ key: ep.key, err: errMsg(e) }, "push error");
+      log.error({ monitor: m.name, err: errMsg(e) }, "push error");
     }
   });
 
   logger.info(
-    { checked: endpoints.length, up, down, pushErrors, durationMs: Date.now() - started },
+    { checked: monitors.length, up, down, pushErrors, durationMs: Date.now() - started },
     "cycle complete",
   );
 }
@@ -103,8 +110,8 @@ async function listLoop(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  if (!config.pushToken) {
-    logger.fatal("PUSH_TOKEN is required");
+  if (!config.kuvaszApiKey || !config.pushSecretSeed) {
+    logger.fatal("KUVASZ_API_KEY and PUSH_SECRET_SEED are required");
     process.exit(1);
   }
   logger.info(

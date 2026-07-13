@@ -1,9 +1,9 @@
 apiVersion: 1
 
 datasources:
-  - name: Gatus
+  - name: Kuvasz
     type: postgres
-    uid: gatus-postgres
+    uid: kuvasz-postgres
     access: proxy
     url: postgres:5432
     user: ${POSTGRES_USER}

@@ -182,7 +182,7 @@ describe("probe", () => {
     const r = await probe(m);
     expect(r.success).toBe(false);
     expect(r.error).toBe("stream");
-    // Failure message carries the full per-resource breakdown so Gatus's tooltip shows what was probed.
+    // Failure message carries the full per-resource breakdown so Kuvasz's failure error shows what was probed.
     expect(r.message).toContain("stream: 0 valid / 2 total");
     expect(r.detail.live).toBe(true);
   });

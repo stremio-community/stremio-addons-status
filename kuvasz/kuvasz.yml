@@ -1,0 +1,15 @@
+# Extra Micronaut config mounted into the Kuvasz container (compose.yaml).
+# Monitors are NOT defined here on purpose: YAML-managed monitors put Kuvasz's UI and API into read-only mode, and the worker manages every monitor through the REST API.
+
+datasources:
+  default:
+    # Kuvasz ships with a 10-connection pool, which self-deadlocks under bursts of concurrent push heartbeats (each handler holds a connection while acquiring another).
+    # 50 gives plenty of headroom for the worker's pushes plus page/API traffic.
+    maximumPoolSize: 50
+
+integrations:
+  discord:
+    # Referenced by the worker as "discord:alerts" on the monitors it manages, but only when DISCORD_WEBHOOK_URL is set.
+    # With the webhook unconfigured, compose substitutes a placeholder URL (see compose.yaml) so Kuvasz still boots; the integration is then simply never assigned.
+    - name: alerts
+      webhook-url: ${DISCORD_WEBHOOK_URL}

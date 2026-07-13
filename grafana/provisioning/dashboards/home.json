@@ -9,14 +9,14 @@
   "version": 1,
   "schemaVersion": 39,
   "refresh": "5m",
-  "tags": ["stremio", "gatus"],
+  "tags": ["stremio", "kuvasz"],
   "templating": { "list": [] },
   "panels": [
     {
       "type": "stat",
       "title": "Fleet uptime (selected range)",
       "gridPos": { "h": 5, "w": 6, "x": 0, "y": 0 },
-      "datasource": { "type": "postgres", "uid": "gatus-postgres" },
+      "datasource": { "type": "postgres", "uid": "kuvasz-postgres" },
       "fieldConfig": {
         "defaults": {
           "unit": "percent",
@@ -40,44 +40,49 @@
         {
           "refId": "A",
           "format": "table",
-          "rawSql": "SELECT 100.0 * sum(successful_executions) / NULLIF(sum(total_executions), 0) AS uptime FROM endpoint_uptimes WHERE $__unixEpochFilter(hour_unix_timestamp)"
+          "rawSql": "SELECT 100.0 * sum(EXTRACT(EPOCH FROM (LEAST(coalesce(e.ended_at, now()), $__timeTo()) - GREATEST(e.started_at, $__timeFrom())))) FILTER (WHERE e.status = 'UP') / NULLIF(sum(EXTRACT(EPOCH FROM (LEAST(coalesce(e.ended_at, now()), $__timeTo()) - GREATEST(e.started_at, $__timeFrom())))), 0) AS uptime FROM kuvasz.push_uptime_event e WHERE e.started_at < $__timeTo() AND coalesce(e.ended_at, now()) > $__timeFrom()"
         }
       ]
     },
     {
       "type": "stat",
-      "title": "Addons UP (latest check)",
+      "title": "Addons UP (now)",
       "gridPos": { "h": 5, "w": 6, "x": 6, "y": 0 },
-      "datasource": { "type": "postgres", "uid": "gatus-postgres" },
+      "datasource": { "type": "postgres", "uid": "kuvasz-postgres" },
       "fieldConfig": {
-        "defaults": { "unit": "none", "color": { "mode": "fixed", "fixedColor": "green" } }
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }]
+          }
+        }
       },
       "options": {
         "reduceOptions": { "calcs": ["lastNotNull"] },
-        "colorMode": "value",
+        "colorMode": "background",
         "graphMode": "none"
       },
       "targets": [
         {
           "refId": "A",
           "format": "table",
-          "rawSql": "SELECT count(*) AS up FROM endpoints e JOIN LATERAL (SELECT success FROM endpoint_results er WHERE er.endpoint_id = e.endpoint_id ORDER BY er.timestamp DESC LIMIT 1) r ON true WHERE r.success"
+          "rawSql": "SELECT count(*) AS up FROM kuvasz.push_monitor m JOIN kuvasz.push_uptime_event e ON e.monitor_id = m.id AND e.ended_at IS NULL WHERE m.enabled AND e.status = 'UP'"
         }
       ]
     },
     {
       "type": "stat",
-      "title": "Addons DOWN (latest check)",
+      "title": "Addons DOWN (now)",
       "gridPos": { "h": 5, "w": 6, "x": 12, "y": 0 },
-      "datasource": { "type": "postgres", "uid": "gatus-postgres" },
+      "datasource": { "type": "postgres", "uid": "kuvasz-postgres" },
       "fieldConfig": {
         "defaults": {
-          "unit": "none",
           "thresholds": {
             "mode": "absolute",
             "steps": [
               { "color": "green", "value": null },
-              { "color": "red", "value": 1 }
+              { "color": "orange", "value": 1 },
+              { "color": "red", "value": 25 }
             ]
           }
         }
@@ -91,7 +96,7 @@
         {
           "refId": "A",
           "format": "table",
-          "rawSql": "SELECT count(*) AS down FROM endpoints e JOIN LATERAL (SELECT success FROM endpoint_results er WHERE er.endpoint_id = e.endpoint_id ORDER BY er.timestamp DESC LIMIT 1) r ON true WHERE NOT r.success"
+          "rawSql": "SELECT count(*) AS down FROM kuvasz.push_monitor m JOIN kuvasz.push_uptime_event e ON e.monitor_id = m.id AND e.ended_at IS NULL WHERE m.enabled AND e.status = 'DOWN'"
         }
       ]
     },
@@ -99,93 +104,83 @@
       "type": "stat",
       "title": "Monitored addons",
       "gridPos": { "h": 5, "w": 6, "x": 18, "y": 0 },
-      "datasource": { "type": "postgres", "uid": "gatus-postgres" },
+      "datasource": { "type": "postgres", "uid": "kuvasz-postgres" },
       "fieldConfig": {
-        "defaults": { "unit": "none", "color": { "mode": "fixed", "fixedColor": "blue" } }
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "blue", "value": null }]
+          }
+        }
       },
       "options": {
         "reduceOptions": { "calcs": ["lastNotNull"] },
-        "colorMode": "value",
+        "colorMode": "background",
         "graphMode": "none"
-      },
-      "targets": [
-        { "refId": "A", "format": "table", "rawSql": "SELECT count(*) AS total FROM endpoints" }
-      ]
-    },
-    {
-      "type": "timeseries",
-      "title": "Fleet uptime over time",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 5 },
-      "datasource": { "type": "postgres", "uid": "gatus-postgres" },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percent",
-          "min": 0,
-          "max": 100,
-          "custom": { "drawStyle": "line", "fillOpacity": 10 }
-        }
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "format": "time_series",
-          "rawSql": "SELECT to_timestamp(hour_unix_timestamp) AS time, 100.0 * sum(successful_executions) / NULLIF(sum(total_executions), 0) AS \"uptime %\" FROM endpoint_uptimes WHERE $__unixEpochFilter(hour_unix_timestamp) GROUP BY 1 ORDER BY 1"
-        }
-      ]
-    },
-    {
-      "type": "timeseries",
-      "title": "Average response time over time",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 5 },
-      "datasource": { "type": "postgres", "uid": "gatus-postgres" },
-      "fieldConfig": {
-        "defaults": { "unit": "ms", "custom": { "drawStyle": "line", "fillOpacity": 10 } }
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "format": "time_series",
-          "rawSql": "SELECT to_timestamp(hour_unix_timestamp) AS time, sum(total_response_time)::float / NULLIF(sum(total_executions), 0) AS \"avg response (ms)\" FROM endpoint_uptimes WHERE $__unixEpochFilter(hour_unix_timestamp) GROUP BY 1 ORDER BY 1"
-        }
-      ]
-    },
-    {
-      "type": "table",
-      "title": "Health by category",
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 13 },
-      "datasource": { "type": "postgres", "uid": "gatus-postgres" },
-      "fieldConfig": {
-        "defaults": {},
-        "overrides": [
-          {
-            "matcher": { "id": "byName", "options": "Latest Up %" },
-            "properties": [
-              { "id": "unit", "value": "percent" },
-              { "id": "custom.cellOptions", "value": { "type": "color-background" } },
-              {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    { "color": "red", "value": null },
-                    { "color": "orange", "value": 90 },
-                    { "color": "green", "value": 99 }
-                  ]
-                }
-              }
-            ]
-          }
-        ]
-      },
-      "options": {
-        "showHeader": true,
-        "sortBy": [{ "displayName": "Latest Up %", "desc": false }]
       },
       "targets": [
         {
           "refId": "A",
           "format": "table",
-          "rawSql": "SELECT e.endpoint_group AS \"Category\", count(*) AS \"Addons\", count(*) FILTER (WHERE r.success) AS \"Up\", count(*) FILTER (WHERE NOT r.success) AS \"Down\", round(100.0 * count(*) FILTER (WHERE r.success) / NULLIF(count(*), 0), 1) AS \"Latest Up %\" FROM endpoints e JOIN LATERAL (SELECT success FROM endpoint_results er WHERE er.endpoint_id = e.endpoint_id ORDER BY er.timestamp DESC LIMIT 1) r ON true GROUP BY 1 ORDER BY 5 ASC NULLS LAST"
+          "rawSql": "SELECT count(*) AS total FROM kuvasz.push_monitor WHERE enabled"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Fleet uptime over time",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 5 },
+      "datasource": { "type": "postgres", "uid": "kuvasz-postgres" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 2,
+          "min": 0,
+          "max": 100,
+          "custom": { "fillOpacity": 10, "spanNulls": true }
+        }
+      },
+      "options": {},
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT b.t AS time, 100.0 * sum(EXTRACT(EPOCH FROM (LEAST(coalesce(e.ended_at, now()), b.t + interval '1 hour') - GREATEST(e.started_at, b.t)))) FILTER (WHERE e.status = 'UP') / NULLIF(sum(EXTRACT(EPOCH FROM (LEAST(coalesce(e.ended_at, now()), b.t + interval '1 hour') - GREATEST(e.started_at, b.t)))), 0) AS \"uptime %\" FROM generate_series(date_trunc('hour', $__timeFrom()::timestamptz), $__timeTo()::timestamptz, interval '1 hour') AS b(t) JOIN kuvasz.push_uptime_event e ON e.started_at < b.t + interval '1 hour' AND coalesce(e.ended_at, now()) > b.t GROUP BY b.t ORDER BY b.t"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Static checks response time",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 13 },
+      "datasource": { "type": "postgres", "uid": "kuvasz-postgres" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": { "fillOpacity": 5, "spanNulls": true }
+        }
+      },
+      "options": {},
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawSql": "SELECT $__timeGroup(l.created_at, '15m') AS time, m.name AS metric, avg(l.latency) AS \"latency (ms)\" FROM kuvasz.http_latency_log l JOIN kuvasz.http_monitor m ON m.id = l.monitor_id WHERE $__timeFilter(l.created_at) GROUP BY 1, 2 ORDER BY 1"
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Addons down right now",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 21 },
+      "datasource": { "type": "postgres", "uid": "kuvasz-postgres" },
+      "fieldConfig": { "defaults": {} },
+      "options": { "sortBy": [{ "displayName": "Down since", "desc": false }] },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT m.name AS \"Addon\", e.error AS \"Error\", e.started_at AS \"Down since\" FROM kuvasz.push_monitor m JOIN kuvasz.push_uptime_event e ON e.monitor_id = m.id AND e.ended_at IS NULL WHERE m.enabled AND e.status = 'DOWN' ORDER BY e.started_at"
         }
       ]
     }

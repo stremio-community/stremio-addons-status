@@ -1,11 +1,12 @@
 export const config = {
   apiBase: (process.env.API_BASE || "https://stremio-addons.net/api/v0").replace(/\/$/, ""),
-  gatusUrl: (process.env.GATUS_URL || "http://gatus:8080").replace(/\/$/, ""),
-  pushToken: process.env.PUSH_TOKEN || "",
+  kuvaszUrl: (process.env.KUVASZ_URL || "http://kuvasz:8080").replace(/\/$/, ""),
+  kuvaszApiKey: process.env.KUVASZ_API_KEY || "",
+  // Seeds the per-monitor push client secrets (HMAC of the addon slug); changing it re-keys every monitor.
+  pushSecretSeed: process.env.PUSH_SECRET_SEED || "",
   proxyUrl: process.env.PROXY_URL || "",
-  // Empty = Discord disabled: the worker omits the alert block from generated endpoints entirely.
+  // Empty = Discord disabled: the worker assigns no integration to the monitors it manages.
   discordWebhookUrl: process.env.DISCORD_WEBHOOK_URL || "",
-  endpointsConfigPath: process.env.ENDPOINTS_CONFIG_PATH || "/config/10-endpoints.yaml",
 
   probeInterval: parseDuration(process.env.PROBE_INTERVAL, 15 * 60_000),
   listRefresh: parseDuration(process.env.LIST_REFRESH, 60 * 60_000),

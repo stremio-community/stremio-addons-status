@@ -32,27 +32,42 @@ services:
       timeout: 5s
       retries: 5
 
-  gatus:
-    image: ghcr.io/twin/gatus:stable
+  kuvasz:
+    # Pinned deliberately: the worker drives Kuvasz's v2 REST API and the hub reads it, so upgrades must be tested.
+    image: kuvaszmonitoring/kuvasz:4.0.1
     restart: no
     depends_on:
       postgres:
         condition: service_healthy
     environment:
-      GATUS_CONFIG_PATH: /config
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
-      DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL}
-      PUSH_TOKEN: ${PUSH_TOKEN}
-      GRAFANA_PUBLIC_URL: ${GRAFANA_PUBLIC_URL}
+      TZ: "UTC"
+      DATABASE_HOST: postgres
+      DATABASE_NAME: ${POSTGRES_DB}
+      DATABASE_USER: ${POSTGRES_USER}
+      DATABASE_PASSWORD: ${POSTGRES_PASSWORD}
+      ENABLE_AUTH: "true"
+      ADMIN_USER: ${KUVASZ_ADMIN_USER}
+      ADMIN_PASSWORD: ${KUVASZ_ADMIN_PASSWORD}
+      ADMIN_API_KEY: ${KUVASZ_API_KEY}
+      # The public status page lives at /status; the admin UI and API stay behind auth.
+      PUBLISH_DEFAULT_STATUS_PAGE: "true"
+      DEFAULT_STATUS_PAGE_TITLE: "Stremio Addons Status"
+      DEFAULT_STATUS_PAGE_LOGO_URL: "https://stremio-addons.net/favicon.ico"
+      # Substituted into kuvasz.yml's Discord integration definition.
+      # An unset/empty webhook falls back to a placeholder so the integration definition stays valid; the worker only assigns it to monitors when the real webhook is set.
+      DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL:-https://discord.com/api/webhooks/0/unconfigured}
     ports:
-      - "${GATUS_PORT}:8080"
+      - "${KUVASZ_PORT}:8080"
     volumes:
-      # Host-bind the config dir directly (read-only).
-      # It holds 00-base.yaml plus the worker-generated 10-endpoints.yaml; Gatus merges every *.yaml here.
-      # A host bind (not a named volume) avoids Gatus's baked-in default config.yaml being seeded into the volume.
-      - ./gatus/config.d:/config:ro
+      - ./kuvasz/kuvasz.yml:/config/kuvasz.yml:ro
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget --quiet --tries=1 --spider http://localhost:8080/api/v2/health || exit 1",
+        ]
+      interval: 30s
+      start_period: 30s
 
   worker:
     build:
@@ -60,21 +75,18 @@ services:
       dockerfile: worker/Dockerfile
     restart: no
     depends_on:
-      postgres:
+      kuvasz:
         condition: service_healthy
     environment:
       API_BASE: ${API_BASE}
-      GATUS_URL: http://gatus:8080
-      PUSH_TOKEN: ${PUSH_TOKEN}
+      KUVASZ_URL: http://kuvasz:8080
+      KUVASZ_API_KEY: ${KUVASZ_API_KEY}
+      PUSH_SECRET_SEED: ${PUSH_SECRET_SEED}
       PROXY_URL: ${PROXY_URL}
       DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL}
       PROBE_INTERVAL: ${PROBE_INTERVAL}
       LIST_REFRESH: ${LIST_REFRESH}
       CONCURRENCY: ${CONCURRENCY}
-      ENDPOINTS_CONFIG_PATH: /config/10-endpoints.yaml
-    volumes:
-      # Worker writes 10-endpoints.yaml into the same host dir Gatus reads.
-      - ./gatus/config.d:/config
 
   grafana:
     image: grafana/grafana:latest
