@@ -45,7 +45,7 @@ Docker Compose is the production setup. For local development, run the infrastru
 ```sh
 pnpm install
 cp worker/.env.example worker/.env.dev             # host-run overrides
-pnpm -F worker start:dev                           # worker on the host, watches src/
+pnpm start:dev                                     # brings up the Docker infra (incl. kener-seed), then runs the worker on the host
 ```
 
 `start:dev` loads the repo-root `.env` first, then `worker/.env.dev` on top. The dev file only overrides what differs when the worker runs on the host instead of inside compose (Kener URL, proxy); see `worker/.env.example` for details.
