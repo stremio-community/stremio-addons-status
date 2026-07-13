@@ -62,14 +62,37 @@ services:
     ports:
       - "${KENER_PORT}:3000"
 
+  kener-seed:
+    # One-shot first-run setup: creates the Kener admin user and the worker API key, then exits.
+    # Idempotent, so it is safe on every `docker compose up`. See scripts/seed-kener.sh.
+    image: postgres:16-alpine
+    restart: no
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kener:
+        condition: service_started
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_DB: ${POSTGRES_DB}
+      KENER_PUBLIC_URL: ${KENER_PUBLIC_URL}
+      KENER_SECRET_KEY: ${KENER_SECRET_KEY}
+      KENER_API_TOKEN: ${KENER_API_TOKEN}
+      KENER_ADMIN_EMAIL: ${KENER_ADMIN_EMAIL}
+      KENER_ADMIN_PASSWORD: ${KENER_ADMIN_PASSWORD}
+    entrypoint: ["sh", "/seed-kener.sh"]
+    volumes:
+      - ./scripts/seed-kener.sh:/seed-kener.sh:ro
+
   worker:
     build:
       context: .
       dockerfile: worker/Dockerfile
     restart: no
     depends_on:
-      kener:
-        condition: service_started
+      kener-seed:
+        condition: service_completed_successfully
     environment:
       API_BASE: ${API_BASE}
       KENER_URL: http://kener:3000

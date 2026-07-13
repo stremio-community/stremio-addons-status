@@ -6,7 +6,7 @@ A status page for Stremio addons that checks whether an addon **actually works**
 
 Data flow: `stremio-addons.net API → worker → Kener (status page + alerts) → Postgres → Grafana`.
 
-pnpm workspace; the only package is `worker/`. See `package.json` scripts for commands. Local dev: run infra in Docker, worker on host (`docker compose up -d postgres redis kener grafana warp` + `pnpm -F worker start:dev`). Production is `docker compose up -d`. Kener needs a one-time bootstrap (admin user, API key, static monitors) — see README.
+pnpm workspace; the only package is `worker/`. See `package.json` scripts for commands. Local dev: run infra in Docker, worker on host (`docker compose up -d postgres redis kener grafana warp` + `pnpm -F worker start:dev`). Production is `docker compose up -d`. The `kener-seed` compose one-shot (scripts/seed-kener.sh) creates the admin user and registers `KENER_API_TOKEN` on startup; the remaining one-time bootstrap (branding/triggers in the manage UI, static monitors via `bootstrap:kener`) is in the README.
 
 ## Architecture
 
