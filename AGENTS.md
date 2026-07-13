@@ -52,4 +52,4 @@ The `kener-seed` compose one-shot runs on every startup: it creates the admin us
 - Structured logging via pino ([logger.ts](worker/src/logger.ts)); no `console.log`.
 - Keep this file current: when a change alters one of the non-obvious decisions above (probe verdict, proxy fallback, Kener tags/ordering/no-cron, bootstrap layout), update AGENTS.md in the same change.
 - stremio-addons.net API docs: https://docs.stremio-addons.net/developers/api
-- Kener is pinned to an exact image tag (compose.yaml); the hub reads Kener's internal `dashboard-apis/monitor-bar` endpoint, so upgrades must be deliberate and tested against the hub.
+- Kener is built from a pinned upstream tag ([kener/Dockerfile](kener/Dockerfile)), which also raises the compiled monitor-bars 100-tag batch cap (Kener's frontend fetches all ~540 page monitors in one batch; the build fails loudly if the patch pattern vanishes). The hub reads Kener's internal `dashboard-apis/monitor-bar` endpoint, so upgrades must be deliberate and tested against the hub.
