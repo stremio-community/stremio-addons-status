@@ -47,29 +47,32 @@ function baseName(addon: NormalizedAddon): string {
 export function buildEndpoints(addons: NormalizedAddon[]): EndpointDescriptor[] {
   // Addon names aren't unique (slugs are), so pre-count shared name+group keys.
   // We disambiguate every sharer, not just the "losers": suffixing only later collisions would depend on list order, drifting the key (and its Postgres history) between refreshes.
-  const counts = new Map<string, number>();
+  const nameCounts = new Map<string, number>();
   for (const addon of addons) {
     const k = keyOf(orderPrefix(groupFor(addon)), baseName(addon));
-    counts.set(k, (counts.get(k) ?? 0) + 1);
+    nameCounts.set(k, (nameCounts.get(k) ?? 0) + 1);
   }
 
-  const used = new Set<string>();
-  const out: EndpointDescriptor[] = [];
-  for (const addon of addons) {
+  // First pass: group + tentative name, suffixing the stable unique slug when the display name collides (never an order-dependent counter).
+  const tentative = addons.map((addon) => {
     const group = orderPrefix(groupFor(addon));
     let name = baseName(addon);
-    // Shared name -> disambiguate with the stable, unique slug (never an order-dependent counter).
-    if ((counts.get(keyOf(group, name)) ?? 0) > 1) name = `${name} (${addon.slug || addon.uuid})`;
-    let key = keyOf(group, name);
-    // Backstop: sanitize can still collapse two distinct slugs into one key; fall back to the unique uuid.
-    if (used.has(key)) {
+    if ((nameCounts.get(keyOf(group, name)) ?? 0) > 1) name = `${name} (${addon.slug || addon.uuid})`;
+    return { addon, group, name, key: keyOf(group, name) };
+  });
+
+  // Second pass backstop: sanitize can still collapse two distinct slugs into one key.
+  // Fall back to the unique uuid for every colliding member, not just the later "losers": keying off list position would reattribute Postgres history when the API reorders.
+  const keyCounts = new Map<string, number>();
+  for (const t of tentative) keyCounts.set(t.key, (keyCounts.get(t.key) ?? 0) + 1);
+
+  return tentative.map(({ addon, group, name, key }) => {
+    if ((keyCounts.get(key) ?? 0) > 1) {
       name = `${baseName(addon)} (${addon.uuid})`;
       key = keyOf(group, name);
     }
-    used.add(key);
-    out.push({ addon, name, group, key });
-  }
-  return out;
+    return { addon, name, group, key };
+  });
 }
 
 interface ExternalEndpointYaml {
