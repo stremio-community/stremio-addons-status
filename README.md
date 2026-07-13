@@ -40,7 +40,6 @@ Docker Compose is the production setup. For local development, run the infrastru
 ```sh
 pnpm install
 cp worker/.env.example worker/.env.dev             # host-run overrides
-docker compose up -d postgres gatus grafana warp   # infra only, not the worker
 pnpm -F worker start:dev                           # worker on the host, watches src/
 ```
 
