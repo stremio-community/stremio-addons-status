@@ -68,6 +68,7 @@ interface KenerMonitor {
   status: string;
   is_hidden: string;
   external_url?: string | null;
+  type_data?: { monitors?: Array<{ tag: string }> } | null;
 }
 
 async function api(method: string, path: string, body?: unknown): Promise<Response> {
@@ -93,9 +94,13 @@ function externalUrl(addon: NormalizedAddon): string {
   return `https://stremio-addons.net/addons/${addon.slug}`;
 }
 
-/** A monitor is the worker's own only if it is a pure-push NONE monitor in a worker category. */
+/** A monitor is the worker's own only if it is a pure-push NONE member or a GROUP aggregate in a worker category. */
 function isWorkerManaged(remote: KenerMonitor): boolean {
-  return remote.monitor_type === "NONE" && remote.category_name !== null && WORKER_CATEGORIES.has(remote.category_name);
+  return (
+    (remote.monitor_type === "NONE" || remote.monitor_type === "GROUP") &&
+    remote.category_name !== null &&
+    WORKER_CATEGORIES.has(remote.category_name)
+  );
 }
 
 /**
@@ -143,8 +148,14 @@ export async function reconcileMonitors(monitors: MonitorDescriptor[]): Promise<
 
   // Addons gone from the list: hide + deactivate, never delete, so Postgres history survives a relisting.
   // INACTIVE also drops them from Kener's overall fleet status.
+  // NONE only: GROUP monitors are worker-managed too but reconcileGroups owns their lifecycle.
   for (const remote of existing) {
-    if (isWorkerManaged(remote) && !wantedTags.has(remote.tag) && (remote.is_hidden !== "YES" || remote.status !== "INACTIVE")) {
+    if (
+      remote.monitor_type === "NONE" &&
+      isWorkerManaged(remote) &&
+      !wantedTags.has(remote.tag) &&
+      (remote.is_hidden !== "YES" || remote.status !== "INACTIVE")
+    ) {
       toPatch.push({ tag: remote.tag, patch: { is_hidden: "YES", status: "INACTIVE" } });
     }
   }
@@ -179,112 +190,153 @@ export async function reconcileMonitors(monitors: MonitorDescriptor[]): Promise<
     }
   });
 
-  // Worker-managed = ours now or ever (covers hidden delisted monitors that must leave the pages).
+  const groups = buildGroups(monitors);
+  await reconcileGroups(groups, existing);
+
+  // Worker-managed = ours now or ever (covers hidden delisted monitors that must leave the page).
   const workerManagedTags = new Set(wantedTags);
+  for (const g of groups) workerManagedTags.add(g.tag);
   for (const remote of existing) {
     if (isWorkerManaged(remote)) workerManagedTags.add(remote.tag);
   }
-  await reconcilePages(monitors, workerManagedTags);
+  await reconcilePages(groups, workerManagedTags);
 
   logger.info(
-    { monitors: monitors.length, created: toCreate.length, patched: toPatch.length, failures },
+    { monitors: monitors.length, groups: groups.length, created: toCreate.length, patched: toPatch.length, failures },
     "kener monitors reconciled",
   );
 }
 
 /**
- * Max monitors per Kener page. Two reasons: a page fetches all of its monitors in a single
- * monitor-bars batch request, which Kener caps at 100 tags, and a page with hundreds of
- * 90-day bars is unusably heavy in the browser anyway.
+ * Max members per GROUP monitor: the public page's member drawer fetches all member bars
+ * in a single monitor-bars batch request, which Kener caps at 100 tags.
  */
-const PAGE_SHARD_SIZE = 100;
+const GROUP_SIZE = 100;
 
-/** Shard-page paths the worker owns; never hand-create pages matching these. */
-const SHARD_PATH_RE = /^(addons|addon-instances)-\d+$/;
+/** Legacy worker-owned shard pages from before the GROUP monitor layout; deleted on sight. */
+const LEGACY_SHARD_PATH_RE = /^(addons|addon-instances)-\d+$/;
 
-export interface PageShard {
-  path: string;
-  title: string;
-  tags: string[];
+export interface GroupSpec {
+  tag: string;
+  name: string;
+  category: MonitorDescriptor["category"];
+  memberTags: string[];
 }
 
-/** Slice the worker's monitors into shard pages per category, sorted by display name, ≤ PAGE_SHARD_SIZE each. */
-export function shardPages(monitors: MonitorDescriptor[]): PageShard[] {
-  const groups: Array<{ prefix: string; label: string; category: MonitorDescriptor["category"] }> = [
-    { prefix: "addons", label: "Addons", category: "Addons" },
-    { prefix: "addon-instances", label: "Addon Instances", category: "Addon Instances" },
-  ];
+function titleCase(s: string): string {
+  return s.replace(/\b\w/g, (c) => c.toUpperCase());
+}
 
-  return groups.flatMap((g) => {
-    const tags = monitors
-      .filter((m) => m.category === g.category)
-      .sort((a, b) => a.name.localeCompare(b.name))
-      .map((m) => m.tag);
-    const count = Math.ceil(tags.length / PAGE_SHARD_SIZE);
-    return Array.from({ length: count }, (_, i) => ({
-      path: `${g.prefix}-${i + 1}`,
-      title: count > 1 ? `${g.label} (${i + 1}/${count})` : g.label,
-      tags: tags.slice(i * PAGE_SHARD_SIZE, (i + 1) * PAGE_SHARD_SIZE),
-    }));
-  });
+/**
+ * Group the worker's monitors into GROUP monitor specs: addons by their primary list category,
+ * instances as one group, each chunked to ≤ GROUP_SIZE members (sorted by display name).
+ * Group tags live under the group- prefix so they can't collide with addon slugs.
+ */
+export function buildGroups(monitors: MonitorDescriptor[]): GroupSpec[] {
+  const buckets = new Map<string, { name: string; category: MonitorDescriptor["category"]; members: MonitorDescriptor[] }>();
+  for (const m of monitors) {
+    const isInstance = m.category === "Addon Instances";
+    const label = isInstance ? "Addon Instances" : titleCase(m.addon.categories[0] || "Other");
+    const tag = isInstance ? "group-addon-instances" : `group-addons-${tagOf({ slug: label, uuid: m.addon.uuid })}`;
+    const bucket = buckets.get(tag) ?? { name: label, category: m.category, members: [] };
+    bucket.members.push(m);
+    buckets.set(tag, bucket);
+  }
+
+  return [...buckets.entries()]
+    .sort(([, a], [, b]) => (a.category === b.category ? a.name.localeCompare(b.name) : a.category === "Addons" ? -1 : 1))
+    .flatMap(([tag, bucket]) => {
+      const memberTags = bucket.members.sort((a, b) => a.name.localeCompare(b.name)).map((m) => m.tag);
+      const count = Math.ceil(memberTags.length / GROUP_SIZE);
+      return Array.from({ length: count }, (_, i) => ({
+        tag: count > 1 ? `${tag}-${i + 1}` : tag,
+        name: count > 1 ? `${bucket.name} (${i + 1}/${count})` : bucket.name,
+        category: bucket.category,
+        memberTags: memberTags.slice(i * GROUP_SIZE, (i + 1) * GROUP_SIZE),
+      }));
+    });
+}
+
+/** Create/patch the GROUP monitors and hide the ones whose category vanished. */
+async function reconcileGroups(groups: GroupSpec[], existing: KenerMonitor[]): Promise<void> {
+  const byTag = new Map(existing.map((m) => [m.tag, m]));
+  const wanted = new Set(groups.map((g) => g.tag));
+
+  for (const g of groups) {
+    const typeData = {
+      monitors: g.memberTags.map((tag) => ({ tag, weight: 1 })),
+      latencyCalculation: "AVG",
+    };
+    const remote = byTag.get(g.tag);
+    if (!remote) {
+      await api("POST", "/monitors", {
+        tag: g.tag,
+        name: g.name,
+        category_name: g.category,
+        monitor_type: "GROUP",
+        // Unlike the pure-push member monitors, groups are evaluated by Kener itself:
+        // each run reads the members' latest cached statuses and writes one aggregate row.
+        cron: "*/5 * * * *",
+        type_data: typeData,
+        status: "ACTIVE",
+        is_hidden: "NO",
+      });
+      continue;
+    }
+    const remoteMembers = (remote.type_data?.monitors ?? []).map((m) => m.tag);
+    const patch: Record<string, unknown> = {};
+    if (remote.name !== g.name) patch.name = g.name;
+    if (remote.category_name !== g.category) patch.category_name = g.category;
+    if (remote.is_hidden !== "NO") patch.is_hidden = "NO";
+    if (remote.status !== "ACTIVE") patch.status = "ACTIVE";
+    if (remoteMembers.join(",") !== g.memberTags.join(",")) patch.type_data = typeData;
+    if (Object.keys(patch).length > 0) await api("PATCH", `/monitors/${g.tag}`, patch);
+  }
+
+  // Groups whose category vanished: hide + deactivate (INACTIVE also stops their cron), never delete.
+  for (const remote of existing) {
+    if (
+      remote.monitor_type === "GROUP" &&
+      remote.category_name !== null &&
+      WORKER_CATEGORIES.has(remote.category_name) &&
+      !wanted.has(remote.tag) &&
+      (remote.is_hidden !== "YES" || remote.status !== "INACTIVE")
+    ) {
+      await api("PATCH", `/monitors/${remote.tag}`, { is_hidden: "YES", status: "INACTIVE" });
+    }
+  }
 }
 
 interface KenerPage {
   page_path: string;
-  page_title: string;
   monitors: Array<{ monitor_tag: string; position: number }>;
 }
 
 /**
- * Reconcile Kener's pages: the home page keeps only foreign (static) monitors, while the
- * worker's monitors are sharded across its own pages (addons-N / addon-instances-N) so no
- * single page exceeds PAGE_SHARD_SIZE. Shard membership follows display names, so a rename
- * may move a monitor between shards; that's cosmetic — identity and history live on the tag.
- * Every pages PATCH replaces membership wholesale (position = array index), so this is idempotent.
+ * Reconcile Kener's pages: the home page shows the worker's GROUP monitors (member monitors
+ * live off-page and lazy-load in the group drawer) followed by the foreign (static/seeded)
+ * monitors in their existing relative order. The pages PATCH replaces membership wholesale
+ * (position = array index), so this is idempotent.
  */
-async function reconcilePages(monitors: MonitorDescriptor[], workerManagedTags: Set<string>): Promise<void> {
+async function reconcilePages(groups: GroupSpec[], workerManagedTags: Set<string>): Promise<void> {
   const res = await api("GET", "/pages");
   const pages: KenerPage[] = ((await res.json()) as { pages: KenerPage[] }).pages;
-  const byPath = new Map(pages.map((p) => [p.page_path, p]));
 
-  const memberTags = (p: KenerPage) =>
-    p.monitors.sort((a, b) => a.position - b.position).map((m) => m.monitor_tag);
-
-  // Home: foreign (static/seeded) monitors only, in their existing relative order.
-  const home = byPath.get("~home");
+  const home = pages.find((p) => p.page_path === "~home");
   if (home) {
-    const foreign = memberTags(home).filter((tag) => !workerManagedTags.has(tag));
-    if (foreign.length !== home.monitors.length) {
-      await api("PATCH", "/pages/~home", { monitors: foreign });
+    const foreign = home.monitors
+      .sort((a, b) => a.position - b.position)
+      .map((m) => m.monitor_tag)
+      .filter((tag) => !workerManagedTags.has(tag));
+    const wantedMembership = [...groups.map((g) => g.tag), ...foreign];
+    const current = home.monitors.sort((a, b) => a.position - b.position).map((m) => m.monitor_tag);
+    if (current.join(",") !== wantedMembership.join(",")) {
+      await api("PATCH", "/pages/~home", { monitors: wantedMembership });
     }
   }
 
-  const shards = shardPages(monitors);
-  for (const shard of shards) {
-    const existing = byPath.get(shard.path);
-    if (!existing) {
-      await api("POST", "/pages", {
-        page_path: shard.path,
-        page_title: shard.title,
-        page_header: shard.title,
-        monitors: shard.tags,
-      });
-    } else if (
-      existing.page_title !== shard.title ||
-      memberTags(existing).join(",") !== shard.tags.join(",")
-    ) {
-      await api("PATCH", `/pages/${shard.path}`, {
-        page_title: shard.title,
-        page_header: shard.title,
-        monitors: shard.tags,
-      });
-    }
-  }
-
-  // Shard pages that no longer exist in the plan (list shrank) hold no history; delete them.
-  const wantedPaths = new Set(shards.map((s) => s.path));
   for (const p of pages) {
-    if (SHARD_PATH_RE.test(p.page_path) && !wantedPaths.has(p.page_path)) {
+    if (LEGACY_SHARD_PATH_RE.test(p.page_path)) {
       await api("DELETE", `/pages/${p.page_path}`);
     }
   }

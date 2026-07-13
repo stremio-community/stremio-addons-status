@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildMonitors, shardPages, tagOf } from "./kener.js";
+import { buildGroups, buildMonitors, tagOf } from "./kener.js";
 import type { NormalizedAddon } from "./types.js";
 
 function addon(overrides: Partial<NormalizedAddon>): NormalizedAddon {
@@ -62,23 +62,42 @@ describe("buildMonitors", () => {
   });
 });
 
-describe("shardPages", () => {
-  it("splits each category into pages of at most 100, sorted by display name", () => {
-    const addons = Array.from({ length: 250 }, (_, i) =>
-      addon({ slug: `addon-${i}`, uuid: `u${i}`, name: `Addon ${String(i).padStart(3, "0")}` }),
+describe("buildGroups", () => {
+  it("groups addons by primary category and instances into their own group", () => {
+    const groups = buildGroups(
+      buildMonitors([
+        addon({ slug: "a", uuid: "u1", name: "A", categories: ["movies"] }),
+        addon({ slug: "b", uuid: "u2", name: "B", categories: ["subtitles", "movies"] }),
+        addon({ slug: "c", uuid: "u3", name: "C", categories: [] }),
+        addon({ slug: "i", uuid: "u4", name: "I", categories: ["movies"], instanceOf: "a" }),
+      ]),
     );
-    const instances = [addon({ slug: "inst", uuid: "ui", name: "Instance", instanceOf: "addon-0" })];
-    const shards = shardPages(buildMonitors([...addons, ...instances]));
 
-    expect(shards.map((s) => s.path)).toEqual(["addons-1", "addons-2", "addons-3", "addon-instances-1"]);
-    expect(shards.map((s) => s.title)).toEqual(["Addons (1/3)", "Addons (2/3)", "Addons (3/3)", "Addon Instances"]);
-    expect(shards.map((s) => s.tags.length)).toEqual([100, 100, 50, 1]);
-    expect(shards[0]!.tags[0]).toBe("addon-0");
+    expect(groups.map((g) => g.tag)).toEqual([
+      "group-addons-movies",
+      "group-addons-other",
+      "group-addons-subtitles",
+      "group-addon-instances",
+    ]);
+    expect(groups.map((g) => g.name)).toEqual(["Movies", "Other", "Subtitles", "Addon Instances"]);
+    expect(groups[0]!.memberTags).toEqual(["a"]);
+    expect(groups[3]!.memberTags).toEqual(["i"]);
   });
 
-  it("emits no shard pages for an empty category", () => {
-    const shards = shardPages(buildMonitors([addon({ slug: "solo", uuid: "u1" })]));
-    expect(shards.map((s) => s.path)).toEqual(["addons-1"]);
-    expect(shards[0]!.title).toBe("Addons");
+  it("chunks categories larger than 100 members and sorts members by display name", () => {
+    const addons = Array.from({ length: 150 }, (_, i) =>
+      addon({
+        slug: `addon-${i}`,
+        uuid: `u${i}`,
+        name: `Addon ${String(i).padStart(3, "0")}`,
+        categories: ["movies"],
+      }),
+    );
+    const groups = buildGroups(buildMonitors(addons));
+
+    expect(groups.map((g) => g.tag)).toEqual(["group-addons-movies-1", "group-addons-movies-2"]);
+    expect(groups.map((g) => g.name)).toEqual(["Movies (1/2)", "Movies (2/2)"]);
+    expect(groups.map((g) => g.memberTags.length)).toEqual([100, 50]);
+    expect(groups[0]!.memberTags[0]).toBe("addon-0");
   });
 });
