@@ -6,7 +6,7 @@ A status page for Stremio addons that checks whether an addon **actually works**
 
 Data flow: `stremio-addons.net API → worker → Kener (status page + alerts) → Postgres → Grafana`.
 
-pnpm workspace; the only package is `worker/`. See `package.json` scripts for commands. Local dev: `pnpm start:dev` from the repo root — its pre-script brings up the infra in Docker (including the `kener-seed` one-shot) and then runs the worker on the host with hot reload. Production is `docker compose up -d`. The `kener-seed` compose one-shot (scripts/seed-kener.sh) creates the admin user and registers `KENER_API_TOKEN` on startup; the remaining one-time bootstrap (branding/triggers in the manage UI, static monitors via `bootstrap:kener`) is in the README.
+pnpm workspace; the only package is `worker/`. See `package.json` scripts for commands. Local dev: `pnpm start:dev` from the repo root — its pre-script brings up the infra in Docker (including the `kener-seed` one-shot) and then runs the worker on the host with hot reload. Production is `docker compose up -d`. The `kener-seed` compose one-shot handles all Kener setup on startup (admin user, API key, static monitors — see the Seeding section); only branding/triggers are configured manually in the manage UI.
 
 ## Architecture
 
@@ -41,9 +41,9 @@ The worker owns one Kener monitor per addon and pushes verdicts as data points (
 - **Ordering** is explicit page positions, not names: `reconcileHomePage` PATCHes `~home` with `[Addons by name, Addon Instances by name, ...foreign tags]`. The pages PATCH **replaces membership wholesale**, so foreign (static/bootstrap) tags must always be merged back in or they silently drop off the page.
 - **Categories**: worker-managed monitors are `Addons` or `Addon Instances` (see `CATEGORY_ORDER`); the worker treats any monitor in those categories as its own, so don't hand-create monitors there. Static monitors (bootstrap script) use other categories.
 
-### Static monitors ([bootstrap-kener.ts](worker/scripts/bootstrap-kener.ts))
+### Seeding ([seed-kener.sh](scripts/seed-kener.sh) + [seed-kener.sql](scripts/seed-kener.sql))
 
-The Stremio Platform / Debrid Services / Infrastructure checks are native Kener API monitors on a 5m cron, created by the idempotent `pnpm -F worker bootstrap:kener`. They probe directly (Kener has no per-monitor SOCKS proxy); if one flaps from datacenter-IP blocking, move that check into the worker's push path instead.
+The `kener-seed` compose one-shot runs on every startup: it creates the admin user through Kener's signup endpoint, registers `KENER_API_TOKEN` (Kener stores API keys as `hmac_sha256(KENER_SECRET_KEY, token)`, so the hash is computed in SQL), and upserts the static Stremio Platform / Debrid Services / Infrastructure monitors (native Kener API monitors on a 5m cron). The SQL writes Kener's internal tables directly — verify it against the schema when bumping the pinned Kener image. Static monitors probe directly (Kener has no per-monitor SOCKS proxy); if one flaps from datacenter-IP blocking, move that check into the worker's push path instead.
 
 ## Conventions
 

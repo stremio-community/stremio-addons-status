@@ -84,6 +84,7 @@ services:
     entrypoint: ["sh", "/seed-kener.sh"]
     volumes:
       - ./scripts/seed-kener.sh:/seed-kener.sh:ro
+      - ./scripts/seed-kener.sql:/seed-kener.sql:ro
 
   worker:
     build:

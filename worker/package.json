@@ -8,7 +8,6 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "start:dev": "tsx watch --env-file-if-exists=../.env --env-file-if-exists=.env.dev src/index.ts",
-    "bootstrap:kener": "tsx --env-file-if-exists=../.env --env-file-if-exists=.env.dev scripts/bootstrap-kener.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },

@@ -1,11 +1,10 @@
 #!/bin/sh
 # One-shot Kener seed, run by the kener-seed compose service on stack startup (idempotent).
-# Creates the admin user via the signup endpoint (only possible while no user exists) and
-# upserts the worker's API key directly in Postgres, so KENER_API_TOKEN from .env just works
-# without clicking through the manage UI wizard.
+# Creates the admin user via the signup endpoint (only possible while no user exists), then applies
+# seed-kener.sql, which registers KENER_API_TOKEN as the worker's API key and defines the static
+# monitors — so a fresh stack is fully set up without clicking through the manage UI wizard.
 #
-# Runs inside the postgres:16-alpine image: busybox wget for HTTP, psql + pgcrypto for the key hash
-# (Kener stores hmac_sha256(KENER_SECRET_KEY, token) — deterministic, so we can compute it here).
+# Runs inside the postgres:16-alpine image: busybox wget for HTTP, psql for the SQL.
 set -eu
 
 : "${KENER_INTERNAL_URL:=http://kener:3000}"
@@ -53,16 +52,9 @@ else
   echo "seed: users already exist, skipping admin creation"
 fi
 
-# Worker API key: upsert the hash of KENER_API_TOKEN so the key in .env is always valid.
-# psql only interpolates :'var' from stdin scripts, not -c strings.
-sql -c "CREATE EXTENSION IF NOT EXISTS pgcrypto;" >/dev/null
-printf '%s\n' "
-  INSERT INTO api_keys (name, hashed_key, masked_key)
-  VALUES ('worker', encode(hmac(:'tok', :'sec', 'sha256'), 'hex'), left(:'tok', 6) || '****' || right(:'tok', 4))
-  ON CONFLICT (name) DO UPDATE
-    SET hashed_key = EXCLUDED.hashed_key, masked_key = EXCLUDED.masked_key, updated_at = now();
-" | sql -v tok="$KENER_API_TOKEN" -v sec="$KENER_SECRET_KEY" >/dev/null
-echo "seed: worker API key upserted"
+# Seed data: worker API key + static monitors. See seed-kener.sql.
+sql -v tok="$KENER_API_TOKEN" -v sec="$KENER_SECRET_KEY" -f /seed-kener.sql >/dev/null
+echo "seed: applied seed-kener.sql (worker API key + static monitors)"
 
 # Prove the key works before letting the worker loose on it.
 if ! wget -q -O /dev/null --header "Authorization: Bearer $KENER_API_TOKEN" "$KENER_INTERNAL_URL/api/v4/monitors"; then

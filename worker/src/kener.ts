@@ -14,7 +14,7 @@ export interface MonitorDescriptor {
 
 /**
  * Categories owned by the worker, in top-to-bottom display order on the status page.
- * Static monitors (bootstrap-kener.ts) live in other categories and keep their page positions after this block.
+ * Static monitors (scripts/seed-kener.sql) live in other categories and keep their page positions after this block.
  */
 export const CATEGORY_ORDER = ["Addons", "Addon Instances"] as const;
 

@@ -25,12 +25,9 @@ cp .env.example .env   # then fill in the secrets (see the comments in the file)
 docker compose up -d
 ```
 
-The `kener-seed` service runs on every startup and handles Kener's first-run setup automatically: it creates the manage-UI admin (`KENER_ADMIN_EMAIL`/`KENER_ADMIN_PASSWORD`) and registers `KENER_API_TOKEN` as the worker's API key, so the setup wizard never needs to be clicked through.
+The `kener-seed` service runs on every startup and handles Kener's setup automatically: it creates the manage-UI admin (`KENER_ADMIN_EMAIL`/`KENER_ADMIN_PASSWORD`), registers `KENER_API_TOKEN` as the worker's API key, and seeds the static platform/debrid/infrastructure monitors (see `scripts/seed-kener.sql`) — the setup wizard never needs to be clicked through.
 
-One-time steps after the first start:
-
-1. Configure site branding and alerting (Triggers, e.g. a Discord webhook) in the manage UI at http://localhost:3002/manage.
-2. Create the static platform/debrid/infrastructure monitors: `pnpm -F worker bootstrap:kener`.
+The only manual step left is cosmetic: configure site branding and alerting (Triggers, e.g. a Discord webhook) in the manage UI at http://localhost:3002/manage.
 
 - **Status page**: http://localhost:3002. Addons first, then addon instances and the static platform checks; open a monitor to see its uptime history.
 - **Badges**: `.../badge/{tag}/status` and `.../badge/{tag}/uptime`
