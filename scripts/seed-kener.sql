@@ -70,7 +70,9 @@ VALUES
   return { status: [200, 401].includes(statusCode) ? "UP" : "DOWN", latency: responseTime };
 }$ev$
    )::text),
-  ('stremio-addons-net', 'stremio-addons.net', 'Infrastructure', 'API', '*/5 * * * *', 'ACTIVE', 'UP',
+  -- Tag deliberately differs from the addon-slug namespace: the catalog addon "stremio-addons.net"
+  -- normalizes to the tag stremio-addons-net, which belongs to the worker's monitor for that addon.
+  ('stremio-addons-net-health', 'stremio-addons.net', 'Infrastructure', 'API', '*/5 * * * *', 'ACTIVE', 'UP',
    jsonb_build_object(
      'url', 'https://stremio-addons.net/health',
      'method', 'GET',
@@ -86,7 +88,15 @@ ON CONFLICT (tag) DO UPDATE SET
   monitor_type = EXCLUDED.monitor_type,
   cron = EXCLUDED.cron,
   type_data = EXCLUDED.type_data,
+  status = 'ACTIVE',
+  is_hidden = 'NO',
+  external_url = NULL,
   updated_at = now();
+
+-- One-time repair: the static site check briefly lived on the plain stremio-addons-net tag and was
+-- hijacked by the worker (that tag belongs to the catalog addon of the same name). Deleting the
+-- foreign row frees the tag for the worker's NONE monitor; the cascade cleans page memberships.
+DELETE FROM monitors WHERE tag = 'stremio-addons-net' AND monitor_type <> 'NONE';
 
 -- Drop the demo monitors Kener seeds into an empty database; the category guard avoids
 -- touching a real monitor that happens to reuse one of the demo tags.
@@ -110,6 +120,6 @@ FROM home, maxpos, (VALUES
   ('alldebrid-api', 6),
   ('premiumize-api', 7),
   ('torbox-api', 8),
-  ('stremio-addons-net', 9)
+  ('stremio-addons-net-health', 9)
 ) AS t(tag, ord)
 ON CONFLICT (page_id, monitor_tag) DO NOTHING;

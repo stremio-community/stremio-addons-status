@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildMonitors, tagOf } from "./kener.js";
+import { buildMonitors, shardPages, tagOf } from "./kener.js";
 import type { NormalizedAddon } from "./types.js";
 
 function addon(overrides: Partial<NormalizedAddon>): NormalizedAddon {
@@ -59,5 +59,26 @@ describe("buildMonitors", () => {
       addon({ slug: "two", uuid: "u2", name: "Shared Name" }),
     ]);
     expect(monitors.map((m) => m.name)).toEqual(["Shared Name", "Shared Name"]);
+  });
+});
+
+describe("shardPages", () => {
+  it("splits each category into pages of at most 100, sorted by display name", () => {
+    const addons = Array.from({ length: 250 }, (_, i) =>
+      addon({ slug: `addon-${i}`, uuid: `u${i}`, name: `Addon ${String(i).padStart(3, "0")}` }),
+    );
+    const instances = [addon({ slug: "inst", uuid: "ui", name: "Instance", instanceOf: "addon-0" })];
+    const shards = shardPages(buildMonitors([...addons, ...instances]));
+
+    expect(shards.map((s) => s.path)).toEqual(["addons-1", "addons-2", "addons-3", "addon-instances-1"]);
+    expect(shards.map((s) => s.title)).toEqual(["Addons (1/3)", "Addons (2/3)", "Addons (3/3)", "Addon Instances"]);
+    expect(shards.map((s) => s.tags.length)).toEqual([100, 100, 50, 1]);
+    expect(shards[0]!.tags[0]).toBe("addon-0");
+  });
+
+  it("emits no shard pages for an empty category", () => {
+    const shards = shardPages(buildMonitors([addon({ slug: "solo", uuid: "u1" })]));
+    expect(shards.map((s) => s.path)).toEqual(["addons-1"]);
+    expect(shards[0]!.title).toBe("Addons");
   });
 });

@@ -13,8 +13,9 @@ export interface MonitorDescriptor {
 }
 
 /**
- * Categories owned by the worker, in top-to-bottom display order on the status page.
- * Static monitors (scripts/seed-kener.sql) live in other categories and keep their page positions after this block.
+ * Categories owned by the worker. Each category is published on its own shard pages (see shardPages);
+ * static monitors (scripts/seed-kener.sql) live in other categories on the home page, which the worker
+ * never adds its own monitors to.
  */
 export const CATEGORY_ORDER = ["Addons", "Addon Instances"] as const;
 
@@ -92,6 +93,11 @@ function externalUrl(addon: NormalizedAddon): string {
   return `https://stremio-addons.net/addons/${addon.slug}`;
 }
 
+/** A monitor is the worker's own only if it is a pure-push NONE monitor in a worker category. */
+function isWorkerManaged(remote: KenerMonitor): boolean {
+  return remote.monitor_type === "NONE" && remote.category_name !== null && WORKER_CATEGORIES.has(remote.category_name);
+}
+
 /**
  * Reconcile the addon list into Kener monitors, keyed by stable slug tags.
  * Creates missing monitors, patches drifted display fields (renames are free: the tag never changes),
@@ -102,6 +108,19 @@ export async function reconcileMonitors(monitors: MonitorDescriptor[]): Promise<
   const res = await api("GET", "/monitors");
   const existing: KenerMonitor[] = ((await res.json()) as { monitors: KenerMonitor[] }).monitors;
   const byTag = new Map(existing.map((m) => [m.tag, m]));
+
+  // The worker only ever owns NONE monitors it created itself. If an addon's tag is already taken
+  // by a foreign monitor (a static check or something hand-made), the addon moves to a
+  // uuid-suffixed tag instead of hijacking it. Deterministic, so every refresh lands on the same tag;
+  // the hub can't derive suffixed tags, so that addon simply shows no uptime widget.
+  for (const m of monitors) {
+    const remote = byTag.get(m.tag);
+    if (remote && remote.monitor_type !== "NONE") {
+      const suffixed = tagOf({ slug: `${m.tag}-${m.addon.uuid}`, uuid: m.addon.uuid });
+      logger.warn({ tag: m.tag, suffixed }, "tag occupied by a foreign monitor; using suffixed tag");
+      m.tag = suffixed;
+    }
+  }
   const wantedTags = new Set(monitors.map((m) => m.tag));
 
   const toCreate: MonitorDescriptor[] = [];
@@ -125,8 +144,7 @@ export async function reconcileMonitors(monitors: MonitorDescriptor[]): Promise<
   // Addons gone from the list: hide + deactivate, never delete, so Postgres history survives a relisting.
   // INACTIVE also drops them from Kener's overall fleet status.
   for (const remote of existing) {
-    const workerManaged = remote.category_name !== null && WORKER_CATEGORIES.has(remote.category_name);
-    if (workerManaged && !wantedTags.has(remote.tag) && (remote.is_hidden !== "YES" || remote.status !== "INACTIVE")) {
+    if (isWorkerManaged(remote) && !wantedTags.has(remote.tag) && (remote.is_hidden !== "YES" || remote.status !== "INACTIVE")) {
       toPatch.push({ tag: remote.tag, patch: { is_hidden: "YES", status: "INACTIVE" } });
     }
   }
@@ -161,14 +179,12 @@ export async function reconcileMonitors(monitors: MonitorDescriptor[]): Promise<
     }
   });
 
-  // Worker-managed = ours now or ever (covers hidden delisted monitors that must leave the page).
+  // Worker-managed = ours now or ever (covers hidden delisted monitors that must leave the pages).
   const workerManagedTags = new Set(wantedTags);
   for (const remote of existing) {
-    if (remote.category_name !== null && WORKER_CATEGORIES.has(remote.category_name)) {
-      workerManagedTags.add(remote.tag);
-    }
+    if (isWorkerManaged(remote)) workerManagedTags.add(remote.tag);
   }
-  await reconcileHomePage(monitors, workerManagedTags);
+  await reconcilePages(monitors, workerManagedTags);
 
   logger.info(
     { monitors: monitors.length, created: toCreate.length, patched: toPatch.length, failures },
@@ -177,28 +193,101 @@ export async function reconcileMonitors(monitors: MonitorDescriptor[]): Promise<
 }
 
 /**
- * Rewrite the home page's monitor list: worker categories in CATEGORY_ORDER (each sorted by display name),
- * then every foreign (static/bootstrap) tag in its existing relative order.
- * Worker-managed tags missing from `monitors` (hidden/delisted) drop off the page here.
- * The pages PATCH replaces membership wholesale (position = array index), so this is idempotent.
+ * Max monitors per Kener page. Two reasons: a page fetches all of its monitors in a single
+ * monitor-bars batch request, which Kener caps at 100 tags, and a page with hundreds of
+ * 90-day bars is unusably heavy in the browser anyway.
  */
-async function reconcileHomePage(monitors: MonitorDescriptor[], workerManagedTags: Set<string>): Promise<void> {
-  const res = await api("GET", "/pages/~home");
-  const page = ((await res.json()) as { page: { monitors: Array<{ monitor_tag: string; position: number }> } }).page;
+const PAGE_SHARD_SIZE = 100;
 
-  const foreign = page.monitors
-    .sort((a, b) => a.position - b.position)
-    .map((m) => m.monitor_tag)
-    .filter((tag) => !workerManagedTags.has(tag));
+/** Shard-page paths the worker owns; never hand-create pages matching these. */
+const SHARD_PATH_RE = /^(addons|addon-instances)-\d+$/;
 
-  const ordered = CATEGORY_ORDER.flatMap((category) =>
-    monitors
-      .filter((m) => m.category === category)
+export interface PageShard {
+  path: string;
+  title: string;
+  tags: string[];
+}
+
+/** Slice the worker's monitors into shard pages per category, sorted by display name, ≤ PAGE_SHARD_SIZE each. */
+export function shardPages(monitors: MonitorDescriptor[]): PageShard[] {
+  const groups: Array<{ prefix: string; label: string; category: MonitorDescriptor["category"] }> = [
+    { prefix: "addons", label: "Addons", category: "Addons" },
+    { prefix: "addon-instances", label: "Addon Instances", category: "Addon Instances" },
+  ];
+
+  return groups.flatMap((g) => {
+    const tags = monitors
+      .filter((m) => m.category === g.category)
       .sort((a, b) => a.name.localeCompare(b.name))
-      .map((m) => m.tag),
-  );
+      .map((m) => m.tag);
+    const count = Math.ceil(tags.length / PAGE_SHARD_SIZE);
+    return Array.from({ length: count }, (_, i) => ({
+      path: `${g.prefix}-${i + 1}`,
+      title: count > 1 ? `${g.label} (${i + 1}/${count})` : g.label,
+      tags: tags.slice(i * PAGE_SHARD_SIZE, (i + 1) * PAGE_SHARD_SIZE),
+    }));
+  });
+}
 
-  await api("PATCH", "/pages/~home", { monitors: [...ordered, ...foreign] });
+interface KenerPage {
+  page_path: string;
+  page_title: string;
+  monitors: Array<{ monitor_tag: string; position: number }>;
+}
+
+/**
+ * Reconcile Kener's pages: the home page keeps only foreign (static) monitors, while the
+ * worker's monitors are sharded across its own pages (addons-N / addon-instances-N) so no
+ * single page exceeds PAGE_SHARD_SIZE. Shard membership follows display names, so a rename
+ * may move a monitor between shards; that's cosmetic — identity and history live on the tag.
+ * Every pages PATCH replaces membership wholesale (position = array index), so this is idempotent.
+ */
+async function reconcilePages(monitors: MonitorDescriptor[], workerManagedTags: Set<string>): Promise<void> {
+  const res = await api("GET", "/pages");
+  const pages: KenerPage[] = ((await res.json()) as { pages: KenerPage[] }).pages;
+  const byPath = new Map(pages.map((p) => [p.page_path, p]));
+
+  const memberTags = (p: KenerPage) =>
+    p.monitors.sort((a, b) => a.position - b.position).map((m) => m.monitor_tag);
+
+  // Home: foreign (static/seeded) monitors only, in their existing relative order.
+  const home = byPath.get("~home");
+  if (home) {
+    const foreign = memberTags(home).filter((tag) => !workerManagedTags.has(tag));
+    if (foreign.length !== home.monitors.length) {
+      await api("PATCH", "/pages/~home", { monitors: foreign });
+    }
+  }
+
+  const shards = shardPages(monitors);
+  for (const shard of shards) {
+    const existing = byPath.get(shard.path);
+    if (!existing) {
+      await api("POST", "/pages", {
+        page_path: shard.path,
+        page_title: shard.title,
+        page_header: shard.title,
+        monitors: shard.tags,
+      });
+    } else if (
+      existing.page_title !== shard.title ||
+      memberTags(existing).join(",") !== shard.tags.join(",")
+    ) {
+      await api("PATCH", `/pages/${shard.path}`, {
+        page_title: shard.title,
+        page_header: shard.title,
+        monitors: shard.tags,
+      });
+    }
+  }
+
+  // Shard pages that no longer exist in the plan (list shrank) hold no history; delete them.
+  const wantedPaths = new Set(shards.map((s) => s.path));
+  for (const p of pages) {
+    if (SHARD_PATH_RE.test(p.page_path) && !wantedPaths.has(p.page_path)) {
+      await api("DELETE", `/pages/${p.page_path}`);
+    }
+  }
 }
 
 /** Push a probe verdict as a Kener data point at the current minute and return the HTTP status. */
