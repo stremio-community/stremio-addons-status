@@ -8,14 +8,14 @@ It tracks **every approved addon** on [stremio-addons.net](https://stremio-addon
 
 ## How it works
 
-We use stock [Gatus](https://github.com/TwiN/gatus) for the uptime dashboard plus a small custom-built worker service. The worker fetches the addon list, probes each addon, and reports each verdict to Gatus. Grafana reads Gatus's database for analytics.
+We use stock [Uptime Kuma](https://github.com/louislam/uptime-kuma) for the uptime dashboard plus a small custom-built worker service. The worker fetches the addon list, provisions one push monitor per addon through Kuma's internal API, probes each addon, and pushes each verdict (including the measured response time) to Kuma.
 
 Requests go through a Cloudflare WARP proxy first, falling back to a direct connection when WARP is blocked so an addon is only DOWN when it's unreachable from _both_ routes, not because it happens to block one IP or the other.
 
 In a nutshell:
 
 ```
-stremio-addons.net API ──► worker ──► Gatus (status page + Discord notifications) ──► Postgres ──► Grafana
+stremio-addons.net API ──► worker ──► Uptime Kuma (status page) ──► MariaDB
 ```
 
 ## Quick start
@@ -25,11 +25,11 @@ cp .env.example .env
 docker compose up -d
 ```
 
-- **Status page**: http://localhost:8080. Addons are grouped by category; open one to see its uptime history.
-- **Badge**: `.../api/v1/endpoints/{key}/uptimes/7d/badge.svg`
-- **Grafana**: http://localhost:3000. A read-only dashboard with uptime, per-category health, and response-time trends.
+- **Status page**: http://localhost:3001. Monitors are grouped (addons, addon instances, Stremio platform, debrid services, infrastructure).
+- **Admin UI**: http://localhost:3001/dashboard. Log in with `KUMA_USERNAME`/`KUMA_PASSWORD`; the worker creates the account on first boot.
+- **Badge**: `.../api/badge/{monitorID}/uptime/7d` (the monitor id is visible in the admin UI).
 
-Point `DISCORD_WEBHOOK_URL` at a channel in your Discord server to receive down and recovery alerts. See `.env.example` for the full configuration details.
+See `.env.example` for the full configuration details.
 
 ## Development
 
@@ -43,4 +43,4 @@ cp worker/.env.example worker/.env.dev             # host-run overrides
 pnpm -F worker start:dev                           # worker on the host, watches src/
 ```
 
-`start:dev` loads the repo-root `.env` first, then `worker/.env.dev` on top. The dev file only overrides what differs when the worker runs on the host instead of inside compose (Gatus URL, proxy, endpoints path); see `worker/.env.example` for details.
+`start:dev` loads the repo-root `.env` first, then `worker/.env.dev` on top. The dev file only overrides what differs when the worker runs on the host instead of inside compose (Kuma URL, proxy); see `worker/.env.example` for details.

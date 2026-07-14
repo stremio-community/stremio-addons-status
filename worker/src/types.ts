@@ -25,7 +25,7 @@ export interface PerResourceResult {
 export interface ProbeResult {
   success: boolean;
   durationMs: number;
-  /** Human-readable message pushed to Gatus (shown on the endpoint page). */
+  /** Human-readable message pushed to Uptime Kuma (shown in the admin UI heartbeat detail). */
   message: string;
   error?: string;
   detail: {

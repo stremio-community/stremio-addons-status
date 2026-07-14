@@ -1,15 +1,18 @@
+const probeInterval = parseDuration(process.env.PROBE_INTERVAL, 15 * 60_000);
+
 export const config = {
   apiBase: (process.env.API_BASE || "https://stremio-addons.net/api/v0").replace(/\/$/, ""),
-  gatusUrl: (process.env.GATUS_URL || "http://gatus:8080").replace(/\/$/, ""),
-  pushToken: process.env.PUSH_TOKEN || "",
+  kumaUrl: (process.env.KUMA_URL || "http://kuma:3001").replace(/\/$/, ""),
+  kumaUsername: process.env.KUMA_USERNAME || "admin",
+  kumaPassword: process.env.KUMA_PASSWORD || "",
   proxyUrl: process.env.PROXY_URL || "",
-  // Empty = Discord disabled: the worker omits the alert block from generated endpoints entirely.
-  discordWebhookUrl: process.env.DISCORD_WEBHOOK_URL || "",
-  endpointsConfigPath: process.env.ENDPOINTS_CONFIG_PATH || "/config/10-endpoints.yaml",
 
-  probeInterval: parseDuration(process.env.PROBE_INTERVAL, 15 * 60_000),
+  probeInterval,
   listRefresh: parseDuration(process.env.LIST_REFRESH, 60 * 60_000),
   concurrency: parseNumber(process.env.CONCURRENCY, 8),
+  // Push-monitor interval in seconds, i.e. how long Kuma tolerates push silence before flipping a monitor DOWN.
+  // 4x the probe interval so cycles that stretch (many slow addons) never cause mass false DOWNs, while a dead worker still gets flagged within the hour.
+  pushWatchdog: Math.round(parseDuration(process.env.PUSH_WATCHDOG, 4 * probeInterval) / 1000),
 
   timeouts: {
     manifest: parseNumber(process.env.MANIFEST_TIMEOUT, 15_000),

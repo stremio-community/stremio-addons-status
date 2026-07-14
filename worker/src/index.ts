@@ -1,6 +1,7 @@
 import { config } from "./config.js";
 import { fetchAllAddons } from "./api.js";
-import { buildEndpoints, writeConfig, pushResult, type EndpointDescriptor } from "./gatus.js";
+import { KumaClient } from "./kuma-client.js";
+import { reconcile, pushResult, type Binding } from "./kuma.js";
 import { probe } from "./probe.js";
 import { resetCycle } from "./idsources.js";
 import { mapLimit } from "./concurrency.js";
@@ -8,31 +9,33 @@ import { errMsg, sleep } from "./utils.js";
 import { logger } from "./logger.js";
 import type { ProbeResult } from "./types.js";
 
-let endpoints: EndpointDescriptor[] = [];
+const kuma = new KumaClient({
+  url: config.kumaUrl,
+  username: config.kumaUsername,
+  password: config.kumaPassword,
+});
+
+let bindings: Binding[] = [];
 
 async function refreshList(): Promise<void> {
   const addons = await fetchAllAddons();
-  endpoints = buildEndpoints(addons);
-  await writeConfig(endpoints);
-  logger.info(
-    { addons: addons.length, endpoints: endpoints.length },
-    "list refreshed; wrote endpoints config",
-  );
+  bindings = await reconcile(kuma, addons);
+  logger.info({ addons: addons.length, monitors: bindings.length }, "list refreshed");
 }
 
 async function runCycle(): Promise<void> {
-  if (endpoints.length === 0) return;
+  if (bindings.length === 0) return;
   resetCycle(); // rotate/refresh cached ID-source content each cycle
   const started = Date.now();
   let up = 0;
   let down = 0;
   let pushErrors = 0;
 
-  await mapLimit(endpoints, config.concurrency, async (ep) => {
-    const log = logger.child({ addon: ep.addon.slug });
+  await mapLimit(bindings, config.concurrency, async (binding) => {
+    const log = logger.child({ addon: binding.addon.slug });
     let r: ProbeResult;
     try {
-      r = await probe(ep.addon);
+      r = await probe(binding.addon);
     } catch (e) {
       r = {
         success: false,
@@ -60,21 +63,21 @@ async function runCycle(): Promise<void> {
     );
 
     try {
-      const status = await pushResult(ep, r);
+      const status = await pushResult(binding, r);
       if (status >= 400) {
         pushErrors++;
-        log.error({ key: ep.key, status }, "push failed");
+        log.error({ monitorID: binding.monitorID, status }, "push failed");
       } else {
-        log.debug({ key: ep.key, status }, "pushed verdict to Gatus");
+        log.debug({ monitorID: binding.monitorID, status }, "pushed verdict to Uptime Kuma");
       }
     } catch (e) {
       pushErrors++;
-      log.error({ key: ep.key, err: errMsg(e) }, "push error");
+      log.error({ monitorID: binding.monitorID, err: errMsg(e) }, "push error");
     }
   });
 
   logger.info(
-    { checked: endpoints.length, up, down, pushErrors, durationMs: Date.now() - started },
+    { checked: bindings.length, up, down, pushErrors, durationMs: Date.now() - started },
     "cycle complete",
   );
 }
@@ -103,8 +106,8 @@ async function listLoop(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  if (!config.pushToken) {
-    logger.fatal("PUSH_TOKEN is required");
+  if (!config.kumaPassword) {
+    logger.fatal("KUMA_PASSWORD is required");
     process.exit(1);
   }
   logger.info(
@@ -113,11 +116,23 @@ async function main(): Promise<void> {
       concurrency: config.concurrency,
       probeInterval: config.probeInterval,
       listRefresh: config.listRefresh,
+      pushWatchdog: config.pushWatchdog,
     },
     "starting worker",
   );
 
-  // Retry initial list load until the API is reachable.
+  // Retry until Kuma is reachable and authenticated (first boot also creates the admin account).
+  for (;;) {
+    try {
+      await kuma.start();
+      break;
+    } catch (e) {
+      logger.error({ err: errMsg(e) }, "kuma connect failed, retrying in 30s");
+      await sleep(30_000);
+    }
+  }
+
+  // Retry initial list load + reconcile until the API is reachable.
   for (;;) {
     try {
       await refreshList();
