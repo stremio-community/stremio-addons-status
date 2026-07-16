@@ -8,7 +8,7 @@ It tracks **every approved addon** on [stremio-addons.net](https://stremio-addon
 
 ## How it works
 
-We use stock [Gatus](https://github.com/TwiN/gatus) for the uptime dashboard plus a small custom-built worker service. The worker fetches the addon list, probes each addon, and reports each verdict to Gatus. Grafana reads Gatus's database for analytics.
+We use [Gatus](https://github.com/TwiN/gatus) for the uptime dashboard plus a small custom-built worker service. The worker fetches the addon list, probes each addon, and reports each verdict to Gatus. Grafana reads Gatus's database for analytics.
 
 Requests go through a Cloudflare WARP proxy first, falling back to a direct connection when WARP is blocked so an addon is only DOWN when it's unreachable from _both_ routes, not because it happens to block one IP or the other.
 

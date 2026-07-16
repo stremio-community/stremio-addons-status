@@ -19,7 +19,8 @@ function groupFor(addon: NormalizedAddon): string {
 /**
  * Top-to-bottom display order for the whole status page: the two worker-pushed dynamic groups sit above the static base groups (00-base.yaml).
  * Gatus has no group-ordering config and sorts alphabetically via localeCompare (TwiN/gatus#553), so we encode order as leading spaces:
- * localeCompare sorts more-spaces-first, HTML collapses leading spaces so they stay invisible, and Gatus derives the endpoint key by trimming the group -- so the key (and its history) is untouched.
+ * localeCompare sorts more-spaces-first and HTML collapses leading spaces so they stay invisible.
+ * The endpoint key is the addon's explicit uuid (independent of group and name), so prefixing spaces onto the group is purely cosmetic and never touches identity or history.
  * The static base groups hardcode their matching space counts in 00-base.yaml; keep the two in sync (Stremio Platform = 2 spaces, Debrid Services = 1, Infrastructure = 0).
  */
 const GROUP_ORDER = [
@@ -43,40 +44,23 @@ function baseName(addon: NormalizedAddon): string {
   return addon.name || addon.slug || addon.uuid;
 }
 
-/** Build one descriptor per addon with globally-unique Gatus keys. */
+/**
+ * Build one descriptor per addon.
+ * Identity is the addon's stable uuid, pushed as Gatus's explicit `key` (TwiN/gatus#1146), so it survives renames and regroups; the display name is just a label and needn't be unique.
+ * The uuid is globally unique and contains only [0-9a-f-] (none of which sanitize rewrites), so sanitize(uuid) is injective -- no disambiguation needed.
+ */
 export function buildEndpoints(addons: NormalizedAddon[]): EndpointDescriptor[] {
-  // Addon names aren't unique (slugs are), so pre-count shared name+group keys.
-  // We disambiguate every sharer, not just the "losers": suffixing only later collisions would depend on list order, drifting the key (and its Postgres history) between refreshes.
-  const nameCounts = new Map<string, number>();
-  for (const addon of addons) {
-    const k = keyOf(orderPrefix(groupFor(addon)), baseName(addon));
-    nameCounts.set(k, (nameCounts.get(k) ?? 0) + 1);
-  }
-
-  // First pass: group + tentative name, suffixing the stable unique slug when the display name collides (never an order-dependent counter).
-  const tentative = addons.map((addon) => {
-    const group = orderPrefix(groupFor(addon));
-    let name = baseName(addon);
-    if ((nameCounts.get(keyOf(group, name)) ?? 0) > 1) name = `${name} (${addon.slug || addon.uuid})`;
-    return { addon, group, name, key: keyOf(group, name) };
-  });
-
-  // Second pass backstop: sanitize can still collapse two distinct slugs into one key.
-  // Fall back to the unique uuid for every colliding member, not just the later "losers": keying off list position would reattribute Postgres history when the API reorders.
-  const keyCounts = new Map<string, number>();
-  for (const t of tentative) keyCounts.set(t.key, (keyCounts.get(t.key) ?? 0) + 1);
-
-  return tentative.map(({ addon, group, name, key }) => {
-    if ((keyCounts.get(key) ?? 0) > 1) {
-      name = `${baseName(addon)} (${addon.uuid})`;
-      key = keyOf(group, name);
-    }
-    return { addon, name, group, key };
-  });
+  return addons.map((addon) => ({
+    addon,
+    name: baseName(addon),
+    group: orderPrefix(groupFor(addon)),
+    key: addon.uuid,
+  }));
 }
 
 interface ExternalEndpointYaml {
   name: string;
+  key: string;
   group: string;
   token: string;
   alerts?: Array<Record<string, unknown>>;
@@ -99,6 +83,7 @@ export async function writeConfig(endpoints: EndpointDescriptor[]): Promise<void
 
   const external: ExternalEndpointYaml[] = endpoints.map((e) => ({
     name: e.name,
+    key: e.key,
     group: e.group,
     token: "${PUSH_TOKEN}",
     ...(alerts ? { alerts } : {}),
@@ -131,19 +116,4 @@ export async function pushResult(endpoint: EndpointDescriptor, r: ProbeResult): 
     signal: AbortSignal.timeout(15_000),
   });
   return res.status;
-}
-
-/**
- * Mirror Gatus's key rule (config/key/key.go): trim, lowercase, dash out ` / _ , . # + &`.
- * Lowercasing matters; "BGsubs" and "bgSubs" collide into one key, so dedup must too.
- */
-function sanitize(part: string): string {
-  return part
-    .trim()
-    .toLowerCase()
-    .replace(/[ /_,.#+&]/g, "-");
-}
-
-function keyOf(group: string, name: string): string {
-  return `${sanitize(group)}_${sanitize(name)}`;
 }
