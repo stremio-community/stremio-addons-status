@@ -156,6 +156,7 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
         start,
         {
           live: false,
+          livenessError: `HTTP ${status}`,
           mode: "content",
           perResource,
         },
@@ -171,6 +172,7 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
       start,
       {
         live: false,
+        livenessError: errMsg(e),
         mode: "content",
         perResource,
       },

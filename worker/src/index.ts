@@ -39,7 +39,12 @@ async function runCycle(): Promise<void> {
         durationMs: 0,
         message: `probe error: ${errMsg(e)}`,
         error: "probe",
-        detail: { live: false, mode: "content", perResource: [] },
+        detail: {
+          live: false,
+          livenessError: `probe error: ${errMsg(e)}`,
+          mode: "content",
+          perResource: [],
+        },
       };
     }
     if (r.success) up++;

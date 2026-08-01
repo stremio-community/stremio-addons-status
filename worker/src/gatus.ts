@@ -114,8 +114,15 @@ export interface ConditionResult {
  * Only the primary resource can flip the verdict, so everything else is tagged as informational -- otherwise a healthy addon carrying a failed secondary check reads as a contradiction.
  */
 export function buildConditions(r: ProbeResult): ConditionResult[] {
-  const { live, primary, skipReason, perResource } = r.detail;
-  const conditions: ConditionResult[] = [{ condition: "manifest reachable", success: live }];
+  const { live, livenessError, primary, skipReason, perResource } = r.detail;
+  const conditions: ConditionResult[] = [
+    {
+      condition: live
+        ? "manifest reachable"
+        : `manifest unreachable${livenessError ? ` (${livenessError})` : ""}`,
+      success: live,
+    },
+  ];
   for (const res of perResource) {
     const informational = res.resource !== primary ? " (informational)" : "";
     conditions.push({
@@ -129,12 +136,14 @@ export function buildConditions(r: ProbeResult): ConditionResult[] {
   return conditions;
 }
 
-/** Push a probe verdict to Gatus's external-endpoint API and return the HTTP status. */
+/**
+ * Push a probe verdict to Gatus's external-endpoint API and return the HTTP status.
+ * The breakdown travels only as conditions: Gatus renders the `error` param as a separate block in the same tooltip and Discord alerts format the conditions themselves, so sending the message too would just duplicate it in both places.
+ */
 export async function pushResult(endpoint: EndpointDescriptor, r: ProbeResult): Promise<number> {
   const params = new URLSearchParams({
     success: String(r.success),
     duration: `${r.durationMs}ms`,
-    error: r.message,
   });
   const url = `${config.gatusUrl}/api/v1/endpoints/${endpoint.key}/external?${params.toString()}`;
   const res = await fetch(url, {

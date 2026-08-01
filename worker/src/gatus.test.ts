@@ -7,9 +7,22 @@ function verdict(detail: ProbeResult["detail"]): ProbeResult {
 }
 
 describe("buildConditions", () => {
-  it("reports the manifest as failed when the addon is unreachable", () => {
+  it("reports why the manifest was unreachable", () => {
+    expect(
+      buildConditions(
+        verdict({
+          live: false,
+          livenessError: "HTTP 502",
+          mode: "content",
+          perResource: [],
+        }),
+      ),
+    ).toEqual([{ condition: "manifest unreachable (HTTP 502)", success: false }]);
+  });
+
+  it("still reports an unreachable manifest without a reason", () => {
     expect(buildConditions(verdict({ live: false, mode: "content", perResource: [] }))).toEqual([
-      { condition: "manifest reachable", success: false },
+      { condition: "manifest unreachable", success: false },
     ]);
   });
 
