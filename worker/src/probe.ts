@@ -190,6 +190,7 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
     return result(true, `manifest reachable · content not deep-checked (${reason})`, start, {
       live: true,
       mode: "liveness-only",
+      skipReason: reason,
       perResource,
     });
   };
@@ -388,6 +389,7 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
     return result(true, message, start, {
       live: true,
       mode: "content",
+      primary,
       perResource,
       streamCounts,
     });
@@ -396,7 +398,9 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
   // Manifest up but primary content failed.
   // Push the full per-resource breakdown (not just the primary) so Gatus's failure tooltip shows exactly what was probed and what each resource returned.
   const breakdown = perResource.map((r) => `${r.resource}: ${r.detail}`).join(" · ");
-  const downMsg = breakdown ? `manifest up · ${breakdown}` : `manifest up · ${primary} check failed`;
+  const downMsg = breakdown
+    ? `manifest up · ${breakdown}`
+    : `manifest up · ${primary} check failed`;
   log.debug(
     { step: "verdict", mode: "content", primary, streamCounts },
     `content DOWN: primary resource ${primary} failed`,
@@ -408,6 +412,7 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
     {
       live: true,
       mode: "content",
+      primary,
       perResource,
       streamCounts,
     },

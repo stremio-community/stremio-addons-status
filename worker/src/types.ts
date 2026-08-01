@@ -31,6 +31,10 @@ export interface ProbeResult {
   detail: {
     live: boolean;
     mode: ProbeMode;
+    /** The resource whose outcome drove the verdict; the others only annotate. */
+    primary?: string;
+    /** Why the content tier was skipped, set only in liveness-only mode. */
+    skipReason?: string;
     perResource: PerResourceResult[];
     streamCounts?: { total: number; valid: number };
   };
