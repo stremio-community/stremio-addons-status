@@ -253,25 +253,7 @@ describe("probe", () => {
     expect(r.message).toContain("series no episode ID");
   });
 
-  it("(b) catalog-less kitsu scraper -> IDs from Anime Kitsu ⇒ UP (prefix registry path)", async () => {
-    const m = addon({
-      types: ["anime"],
-      resources: [{ name: "stream", types: ["anime"], idPrefixes: ["kitsu"] }],
-    });
-    idsourcesMock.hasSourceFor = () => true;
-    idsourcesMock.resolveForPrefixes = async () => [
-      { type: "series", id: "kitsu:1", episodeId: "kitsu:1:1:1" },
-    ];
-    router = routes([
-      ["/manifest.json", manifestOk(m.manifest)],
-      ["/stream/series/kitsu:1:1:1.json", { status: 200, data: { streams: [PLAYABLE] } }],
-    ]);
-    const r = await probe(m);
-    expect(r.success).toBe(true);
-    expect(r.detail.streamCounts?.valid).toBe(1);
-  });
-
-  it("catalog-less anime scraper uses a borrowed anime candidate as a single stream target", async () => {
+  it("(b) catalog-less kitsu scraper uses a borrowed anime candidate as a single stream target", async () => {
     const m = addon({
       types: ["anime"],
       resources: [{ name: "stream", types: ["anime"], idPrefixes: ["kitsu"] }],
