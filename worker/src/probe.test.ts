@@ -291,6 +291,27 @@ describe("probe", () => {
     expect(r.message).toContain("stream: anime 1 valid / 1 total");
   });
 
+  it("mixed-type scraper falls back to a sourceable anime candidate as a single target", async () => {
+    const m = addon({
+      types: ["movie", "series", "anime"],
+      resources: [{ name: "stream", types: ["movie", "series", "anime"], idPrefixes: ["kitsu"] }],
+    });
+    idsourcesMock.hasSourceFor = () => true;
+    idsourcesMock.resolveForPrefixes = async () => [
+      { type: "anime", id: "kitsu:1", episodeId: "kitsu:1:1:1" },
+    ];
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      ["/stream/anime/kitsu:1:1:1.json", { status: 200, data: { streams: [PLAYABLE] } }],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(r.detail.mode).toBe("content");
+    expect(r.detail.streamCounts).toEqual({ total: 1, valid: 1 });
+    expect(r.message).toContain("stream: anime 1 valid / 1 total");
+    expect(r.message).not.toContain("no test ID source");
+  });
+
   it("(c) self-contained addon with own catalog -> test ID from its catalog, stream+meta validated", async () => {
     const m = addon({
       types: ["movie"],

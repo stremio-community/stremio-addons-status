@@ -396,6 +396,10 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
           const target = pickCandidateForType(candidates, probeType);
           if (target) streamTargets.push(target);
         }
+        if (streamTargets.length === 0) {
+          const target = pickCandidate(candidates, streamRes.types);
+          if (target) streamTargets.push({ ...target, probeType: target.type });
+        }
       } else {
         const target = pickCandidate(candidates, streamRes.types);
         if (target) streamTargets.push({ ...target, probeType: target.type });
@@ -454,21 +458,24 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
   let streamCounts: { total: number; valid: number } | undefined;
 
   if (streamRes) {
-    const resolvableTargets =
-      advertisedStreamTypes.length > 0
-        ? streamTargets.filter((target) => !EPISODIC_TYPES.has(target.type) || target.episodeId)
-        : streamTargets.slice(0, 1);
-    const missingAdvertisedTargets =
-      advertisedStreamTypes.length > 0 && streamTargets.length > 0
-        ? advertisedStreamTypes
-            .filter(
-              (probeType) => !resolvableTargets.some((target) => target.probeType === probeType),
-            )
-            .map((probeType) => {
-              const sourced = streamTargets.some((target) => target.probeType === probeType);
-              return missingStreamCheck(probeType, sourced ? "no episode ID" : "no test ID source");
-            })
-        : [];
+    const targetedStreamMode =
+      advertisedStreamTypes.length > 0 &&
+      streamTargets.some((target) =>
+        advertisedStreamTypes.some((probeType) => probeType === target.probeType),
+      );
+    const resolvableTargets = targetedStreamMode
+      ? streamTargets.filter((target) => !EPISODIC_TYPES.has(target.type) || target.episodeId)
+      : streamTargets.slice(0, 1);
+    const missingAdvertisedTargets = targetedStreamMode
+      ? advertisedStreamTypes
+          .filter(
+            (probeType) => !resolvableTargets.some((target) => target.probeType === probeType),
+          )
+          .map((probeType) => {
+            const sourced = streamTargets.some((target) => target.probeType === probeType);
+            return missingStreamCheck(probeType, sourced ? "no episode ID" : "no test ID source");
+          })
+      : [];
     if (resolvableTargets.length === 0 && missingAdvertisedTargets.length === 0) {
       // No own catalog and no ID source for its prefixes.
       return livenessOnly("no test ID source for stream prefixes");
