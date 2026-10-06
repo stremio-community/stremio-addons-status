@@ -254,6 +254,33 @@ describe("probe", () => {
     expect(r.message).toContain("series no episode ID");
   });
 
+  it("looks up a stream target's episode ID only once when meta has no videos", async () => {
+    const m = addon({
+      types: ["series"],
+      resources: [
+        { name: "stream", types: ["series"], idPrefixes: ["custom"] },
+        { name: "meta", types: ["series"], idPrefixes: ["custom"] },
+      ],
+    });
+    idsourcesMock.hasSourceFor = () => true;
+    idsourcesMock.resolveForPrefixes = async () => [{ type: "series", id: "custom-series" }];
+    let metaCalls = 0;
+    const metaNoVideos = { status: 200, data: { meta: { id: "custom-series", type: "series" } } };
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/meta/series/custom-series.json",
+        () => {
+          metaCalls++;
+          return metaNoVideos as never;
+        },
+      ],
+    ]);
+    const r = await probe(m);
+    expect(r.detail.mode).toBe("liveness-only");
+    expect(metaCalls).toBe(1);
+  });
+
   it("(b) catalog-less kitsu scraper uses a borrowed anime candidate as a single stream target", async () => {
     const m = addon({
       types: ["anime"],

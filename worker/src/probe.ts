@@ -437,34 +437,30 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
   }
 
   // For episodic content, a stream query needs an episode id.
-  for (const target of streamTargets) {
-    if (!target.episodeId && EPISODIC_TYPES.has(target.type)) {
-      const resolvedEpisodeId = metaRes
-        ? await firstEpisodeId(addon.baseUrl, target.type, target.id)
-        : undefined;
-      const fallback = resolvedEpisodeId ?? fallbackEpisodeId(target.type, target.id);
-      target.episodeId = fallback;
-      log.debug(
-        {
-          step: "testid",
-          probeType: target.probeType,
-          type: target.type,
-          id: target.id,
-          episodeId: target.episodeId,
-        },
-        resolvedEpisodeId
-          ? "resolved episode ID for episodic content"
-          : fallback
-            ? "using default S1E1 episode ID for episodic content"
-            : "no episode ID resolved for episodic content",
-      );
-    }
-  }
-  if (test && !test.episodeId && EPISODIC_TYPES.has(test.type)) {
-    test.episodeId =
-      (metaRes ? await firstEpisodeId(addon.baseUrl, test.type, test.id) : undefined) ??
-      fallbackEpisodeId(test.type, test.id);
-  }
+  const ensureEpisodeId = async (target: TestContent & { probeType?: string }): Promise<void> => {
+    if (target.episodeId || !EPISODIC_TYPES.has(target.type)) return;
+    const resolvedEpisodeId = metaRes
+      ? await firstEpisodeId(addon.baseUrl, target.type, target.id)
+      : undefined;
+    const fallback = resolvedEpisodeId ?? fallbackEpisodeId(target.type, target.id);
+    target.episodeId = fallback;
+    log.debug(
+      {
+        step: "testid",
+        probeType: target.probeType,
+        type: target.type,
+        id: target.id,
+        episodeId: target.episodeId,
+      },
+      resolvedEpisodeId
+        ? "resolved episode ID for episodic content"
+        : fallback
+          ? "using default S1E1 episode ID for episodic content"
+          : "no episode ID resolved for episodic content",
+    );
+  };
+  for (const target of streamTargets) await ensureEpisodeId(target);
+  if (test && !streamTargets.some((target) => target === test)) await ensureEpisodeId(test);
 
   // Step 4: Validate resources.
   let streamCounts: { total: number; valid: number } | undefined;
