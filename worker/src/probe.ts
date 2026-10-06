@@ -179,6 +179,10 @@ function advertisedStreamProbeTypes(types: readonly string[]): TargetedStreamPro
   return STREAM_PROBE_TYPES.filter((type) => types.includes(type));
 }
 
+function isTargetedStreamProbeType(type: string): type is TargetedStreamProbeType {
+  return (STREAM_PROBE_TYPES as readonly string[]).includes(type);
+}
+
 function pickCandidateForType(
   candidates: TestContent[],
   type: TargetedStreamProbeType,
@@ -320,9 +324,17 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
             log.debug({ step: "catalog", type: probeType, err: errMsg(e) }, "catalog fetch threw");
           }
         }
-      } else {
+      }
+      if (streamTargets.length === 0) {
+        // A mixed-type addon may only catalog a non-movie/series type its stream resource serves.
+        const fallbackCatalogs =
+          advertisedStreamTypes.length > 0
+            ? catalogs.filter(
+                (c) => streamRes.types.includes(c.type) && !isTargetedStreamProbeType(c.type),
+              )
+            : catalogs;
         try {
-          const found = await fetchCatalogCandidate(addon.baseUrl, catalogs);
+          const found = await fetchCatalogCandidate(addon.baseUrl, fallbackCatalogs);
           if (found) {
             catalogChecks.push({ ok: found.ok, detail: found.detail });
             if (found.ok && found.content) {
@@ -384,9 +396,9 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
     (probeType) => !streamTargets.some((target) => target.probeType === probeType),
   );
   const needsBorrowedStreamTarget =
-    advertisedStreamTypes.length > 0
-      ? missingStreamProbeTypes.length > 0
-      : streamTargets.length === 0;
+    streamTargets.length === 0 ||
+    (missingStreamProbeTypes.length > 0 &&
+      streamTargets.every((target) => isTargetedStreamProbeType(target.probeType)));
 
   if (streamRes && needsBorrowedStreamTarget) {
     if (streamRes.idPrefixes.length && hasSourceFor(streamRes.idPrefixes)) {

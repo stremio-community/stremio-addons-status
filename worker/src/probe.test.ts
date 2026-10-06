@@ -344,6 +344,36 @@ describe("probe", () => {
     expect(r.message).toContain("catalog: 1 metas");
   });
 
+  it("mixed-type stream addon deep-checks its own non-movie catalog instead of borrowing", async () => {
+    const m = addon({
+      types: ["movie", "series", "anime"],
+      resources: [
+        "catalog",
+        { name: "stream", types: ["movie", "series", "anime"], idPrefixes: ["tt", "kitsu"] },
+      ],
+      catalogs: [{ type: "anime", id: "top", name: "Top" }],
+    });
+    const resolve = vi.fn(async (): Promise<TestContent[]> => {
+      throw new Error("unexpected external ID lookup");
+    });
+    idsourcesMock.hasSourceFor = () => true;
+    idsourcesMock.resolveForPrefixes = resolve;
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/catalog/anime/top.json",
+        { status: 200, data: { metas: [{ id: "kitsu:1", type: "anime", name: "A" }] } },
+      ],
+      ["/stream/anime/kitsu:1.json", { status: 500, data: { streams: [] } }],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(false);
+    expect(r.detail.mode).toBe("content");
+    expect(r.error).toBe("stream");
+    expect(r.message).toContain("anime 0 valid / 0 total");
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
   it("does not borrow IDs when own catalogs already cover movie and series stream targets", async () => {
     const m = addon({
       types: ["movie", "series"],
