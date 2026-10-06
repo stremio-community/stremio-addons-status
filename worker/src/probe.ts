@@ -404,7 +404,7 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
         const target = pickCandidate(candidates, streamRes.types);
         if (target) streamTargets.push({ ...target, probeType: target.type });
       }
-      test = streamTargets[0] ?? pickCandidate(candidates, streamRes.types);
+      test = streamTargets[0] ?? null;
       log.debug(
         {
           step: "testid",
