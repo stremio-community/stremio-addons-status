@@ -187,7 +187,7 @@ describe("probe", () => {
     expect(r.message).toContain("series 0 valid / 1 total");
   });
 
-  it("catalog-less imdb scraper advertising movie+series ⇒ DOWN when only one single-link target is sourceable", async () => {
+  it("catalog-less imdb scraper advertising movie+series keeps the single-target rule when only one target is sourceable", async () => {
     const m = addon({
       types: ["movie", "series"],
       resources: [{ name: "stream", types: ["movie", "series"], idPrefixes: ["tt"] }],
@@ -199,7 +199,8 @@ describe("probe", () => {
       ["/stream/movie/tt1.json", { status: 200, data: { streams: [PLAYABLE] } }],
     ]);
     const r = await probe(m);
-    expect(r.success).toBe(false);
+    expect(r.success).toBe(true);
+    expect(r.detail.streamCounts).toEqual({ total: 1, valid: 1 });
     expect(r.message).toContain("movie 1 valid / 1 total");
     expect(r.message).toContain("series no test ID source");
   });
@@ -229,7 +230,7 @@ describe("probe", () => {
     expect(r.message).toContain("series 1 valid / 1 total");
   });
 
-  it("catalog-less non-imdb scraper advertising movie+series ⇒ DOWN when series lacks an episode ID", async () => {
+  it("catalog-less non-imdb scraper advertising movie+series keeps the single-target rule when series lacks an episode ID", async () => {
     const m = addon({
       types: ["movie", "series"],
       resources: [{ name: "stream", types: ["movie", "series"], idPrefixes: ["custom"] }],
@@ -248,7 +249,7 @@ describe("probe", () => {
       ],
     ]);
     const r = await probe(m);
-    expect(r.success).toBe(false);
+    expect(r.success).toBe(true);
     expect(r.message).toContain("movie 1 valid / 1 total");
     expect(r.message).toContain("series no episode ID");
   });

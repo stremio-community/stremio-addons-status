@@ -488,12 +488,12 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
             return missingStreamCheck(probeType, sourced ? "no episode ID" : "no test ID source");
           })
       : [];
-    if (resolvableTargets.length === 0 && missingAdvertisedTargets.length === 0) {
+    if (resolvableTargets.length === 0) {
       // No own catalog and no ID source for its prefixes.
       return livenessOnly("no test ID source for stream prefixes");
     }
 
-    const streamChecks: StreamCheckResult[] = [...missingAdvertisedTargets];
+    const streamChecks: StreamCheckResult[] = [];
     for (const target of resolvableTargets) {
       const type = target.type;
       const id = target.episodeId ?? target.id;
@@ -546,8 +546,9 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
     };
     perResource.push({
       resource: "stream",
+      // Unsourced targets only annotate: an ID source outage must not turn into a DOWN.
       ok: streamVerdict(streamChecks),
-      detail: streamDetail(streamChecks),
+      detail: streamDetail([...missingAdvertisedTargets, ...streamChecks]),
     });
   }
 
