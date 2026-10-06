@@ -434,6 +434,59 @@ describe("probe", () => {
     expect(resolve).not.toHaveBeenCalled();
   });
 
+  it("borrows only the stream target type its own catalogs don't cover", async () => {
+    const m = addon({
+      types: ["movie", "series"],
+      resources: ["catalog", { name: "stream", types: ["movie", "series"], idPrefixes: ["tt"] }],
+      catalogs: [{ type: "movie", id: "top-movie", name: "Top Movies" }],
+    });
+    idsourcesMock.hasSourceFor = () => true;
+    idsourcesMock.resolveForPrefixes = async () => [
+      { type: "movie", id: "tt-borrowed" },
+      { type: "series", id: "tt2", episodeId: "tt2:1:1" },
+    ];
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/catalog/movie/top-movie.json",
+        { status: 200, data: { metas: [{ id: "movie1", type: "movie", name: "M" }] } },
+      ],
+      ["/stream/movie/movie1.json", { status: 200, data: { streams: [PLAYABLE] } }],
+      ["/stream/series/tt2:1:1.json", { status: 200, data: { streams: [PLAYABLE, PLAYABLE] } }],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(r.message).toContain("movie 1 valid / 1 total");
+    expect(r.message).toContain("series 2 valid / 2 total");
+  });
+
+  it("dual-target stream fetch that throws counts as that target failing", async () => {
+    const m = addon({
+      types: ["movie", "series"],
+      resources: [{ name: "stream", types: ["movie", "series"], idPrefixes: ["tt"] }],
+    });
+    idsourcesMock.hasSourceFor = () => true;
+    idsourcesMock.resolveForPrefixes = async () => [
+      { type: "movie", id: "tt1" },
+      { type: "series", id: "tt2", episodeId: "tt2:1:1" },
+    ];
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      ["/stream/movie/tt1.json", { status: 200, data: { streams: [PLAYABLE] } }],
+      [
+        "/stream/series/tt2:1:1.json",
+        () => {
+          throw new Error("socket hang up");
+        },
+      ],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(false);
+    expect(r.error).toBe("stream");
+    expect(r.message).toContain("movie 1 valid / 1 total");
+    expect(r.message).toContain("series socket hang up");
+  });
+
   it("catalog annotation reports failed catalog probes even when another target is sourced", async () => {
     const m = addon({
       types: ["movie", "series"],
