@@ -311,17 +311,28 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
     if (streamRes) {
       const catalogChecks: Array<{ ok: boolean; detail: string }> = [];
       if (advertisedStreamTypes.length > 0) {
-        for (const probeType of advertisedStreamTypes) {
-          try {
-            const found = await fetchCatalogCandidate(addon.baseUrl, catalogs, probeType);
-            if (!found) continue;
-            catalogChecks.push({ ok: found.ok, detail: `${probeType} ${found.detail}` });
-            if (found.ok && found.content) {
-              streamTargets.push({ ...found.content, probeType });
+        const results = await Promise.all(
+          advertisedStreamTypes.map(async (probeType) => {
+            try {
+              return {
+                probeType,
+                found: await fetchCatalogCandidate(addon.baseUrl, catalogs, probeType),
+              };
+            } catch (e) {
+              return { probeType, error: errMsg(e) };
             }
-          } catch (e) {
-            catalogChecks.push({ ok: false, detail: `${probeType} ${errMsg(e)}` });
-            log.debug({ step: "catalog", type: probeType, err: errMsg(e) }, "catalog fetch threw");
+          }),
+        );
+        for (const { probeType, found, error } of results) {
+          if (error !== undefined) {
+            catalogChecks.push({ ok: false, detail: `${probeType} ${error}` });
+            log.debug({ step: "catalog", type: probeType, err: error }, "catalog fetch threw");
+            continue;
+          }
+          if (!found) continue;
+          catalogChecks.push({ ok: found.ok, detail: `${probeType} ${found.detail}` });
+          if (found.ok && found.content) {
+            streamTargets.push({ ...found.content, probeType });
           }
         }
       }
@@ -489,52 +500,47 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
       return livenessOnly("no test ID source for stream prefixes");
     }
 
-    const streamChecks: StreamCheckResult[] = [];
-    for (const target of resolvableTargets) {
-      const type = target.type;
-      const id = target.episodeId ?? target.id;
-      try {
-        const { status, data } = await getJson<StreamResponse>(
-          `${addon.baseUrl}/stream/${type}/${encodeId(id)}.json`,
-          config.timeouts.stream,
-        );
-        const streams = Array.isArray(data?.streams) ? data!.streams! : [];
-        const valid = streams.filter(isPlayableStream).length;
-        const ok = status >= 200 && status < 300 && valid >= 1;
-        streamChecks.push({
-          target,
-          ok,
-          total: streams.length,
-          valid,
-          detail: `${valid} valid / ${streams.length} total`,
-        });
-        log.debug(
-          {
-            step: "stream",
+    const streamChecks = await Promise.all(
+      resolvableTargets.map(async (target): Promise<StreamCheckResult> => {
+        const type = target.type;
+        const id = target.episodeId ?? target.id;
+        try {
+          const { status, data } = await getJson<StreamResponse>(
+            `${addon.baseUrl}/stream/${type}/${encodeId(id)}.json`,
+            config.timeouts.stream,
+          );
+          const streams = Array.isArray(data?.streams) ? data!.streams! : [];
+          const valid = streams.filter(isPlayableStream).length;
+          const ok = status >= 200 && status < 300 && valid >= 1;
+          log.debug(
+            {
+              step: "stream",
+              ok,
+              status,
+              valid,
+              total: streams.length,
+              probeType: target.probeType,
+              type,
+              id,
+            },
+            `stream check ${ok ? "ok" : "fail"}: ${target.probeType} ${valid}/${streams.length} playable`,
+          );
+          return {
+            target,
             ok,
-            status,
-            valid,
             total: streams.length,
-            probeType: target.probeType,
-            type,
-            id,
-          },
-          `stream check ${ok ? "ok" : "fail"}: ${target.probeType} ${valid}/${streams.length} playable`,
-        );
-      } catch (e) {
-        streamChecks.push({
-          target,
-          ok: false,
-          total: 0,
-          valid: 0,
-          detail: errMsg(e),
-        });
-        log.debug(
-          { step: "stream", ok: false, err: errMsg(e), probeType: target.probeType, type, id },
-          "stream fetch threw",
-        );
-      }
-    }
+            valid,
+            detail: `${valid} valid / ${streams.length} total`,
+          };
+        } catch (e) {
+          log.debug(
+            { step: "stream", ok: false, err: errMsg(e), probeType: target.probeType, type, id },
+            "stream fetch threw",
+          );
+          return { target, ok: false, total: 0, valid: 0, detail: errMsg(e) };
+        }
+      }),
+    );
 
     streamCounts = {
       total: streamChecks.reduce((sum, check) => sum + check.total, 0),
