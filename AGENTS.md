@@ -22,9 +22,9 @@ Non-obvious decisions to preserve when editing:
 Two-tier: a **liveness floor** (manifest reachable) plus **content depth** (a real resource returns usable data).
 
 - Primary resource priority: `stream` > `catalog` > `meta`. Verdict is driven by the primary; secondary resources (subtitles) only annotate, never flip a verdict.
-- A stream counts as valid only if it carries a playable source field (`STREAM_SOURCE_FIELDS`, kept in sync with the SDK `Stream` type). "Responds but 0 valid streams" = DOWN — that's the whole point.
+- A stream counts as valid only if it carries a playable source field (`STREAM_SOURCE_FIELDS`, kept in sync with the SDK `Stream` type). For stream addons, probe one movie and one series episode when the stream resource advertises both. When both targets get a test ID, the verdict requires at least one of them to return more than 1 valid stream; if both only return 0–1 valid streams, the addon is DOWN. Otherwise the single probed target needs at least 1 valid stream; this also covers non-movie/series types such as `anime`, `tv`, and `channel`. A target without a test ID is only noted in the detail, so an ID-source outage can't cause a DOWN.
 - `mode: "liveness-only"` (UP, not deep-checked) when there's no testable resource, config is required, or no test ID can be sourced.
-- Test IDs come from the addon's own catalog when possible; else borrowed via [idsources.ts](worker/src/idsources.ts) from external metadata addons (Cinemeta for `tt`, Anime Kitsu for `kitsu`). `resetCycle()` clears the per-cycle cache each probe cycle so IDs rotate.
+- Test IDs come from the addon's own catalog when possible; else borrowed via [idsources.ts](worker/src/idsources.ts) from external metadata addons (Cinemeta for `tt`, Anime Kitsu for `kitsu`). `resetCycle()` clears the per-cycle cache each probe cycle so IDs rotate. Episodic targets need an episode ID from the addon's meta; an imdb series without one falls back to S1E1 (`tt…:1:1`).
 
 ### Proxy ([http.ts](worker/src/http.ts))
 
