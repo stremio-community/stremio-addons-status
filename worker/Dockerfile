@@ -1,4 +1,4 @@
-FROM node:24-alpine AS build
+FROM node:24.22.1-alpine AS build
 WORKDIR /repo
 RUN corepack enable
 # Workspace manifests first, for layer caching. pnpm version comes from the root "packageManager" field.
@@ -8,7 +8,7 @@ RUN pnpm install --frozen-lockfile
 COPY worker ./worker
 RUN pnpm -F worker build
 
-FROM node:24-alpine AS runtime
+FROM node:24.22.1-alpine AS runtime
 WORKDIR /repo
 ENV NODE_ENV=production
 RUN corepack enable
