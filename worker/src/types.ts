@@ -25,12 +25,18 @@ export interface PerResourceResult {
 export interface ProbeResult {
   success: boolean;
   durationMs: number;
-  /** Human-readable message pushed to Gatus (shown on the endpoint page). */
+  /** Human-readable summary of the verdict, for logs. */
   message: string;
   error?: string;
   detail: {
     live: boolean;
+    /** Why the liveness floor failed, set only when live is false. */
+    livenessError?: string;
     mode: ProbeMode;
+    /** The resource whose outcome drove the verdict; the others only annotate. */
+    primary?: string;
+    /** Why the content tier was skipped, set only in liveness-only mode. */
+    skipReason?: string;
     perResource: PerResourceResult[];
     streamCounts?: { total: number; valid: number };
   };

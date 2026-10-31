@@ -244,6 +244,7 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
         start,
         {
           live: false,
+          livenessError: `HTTP ${status}`,
           mode: "content",
           perResource,
         },
@@ -259,6 +260,7 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
       start,
       {
         live: false,
+        livenessError: errMsg(e),
         mode: "content",
         perResource,
       },
@@ -278,6 +280,7 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
     return result(true, `manifest reachable · content not deep-checked (${reason})`, start, {
       live: true,
       mode: "liveness-only",
+      skipReason: reason,
       perResource,
     });
   };
@@ -620,6 +623,7 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
     return result(true, message, start, {
       live: true,
       mode: "content",
+      primary,
       perResource,
       streamCounts,
     });
@@ -642,6 +646,7 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
     {
       live: true,
       mode: "content",
+      primary,
       perResource,
       streamCounts,
     },

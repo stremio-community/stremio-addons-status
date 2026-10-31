@@ -102,17 +102,58 @@ export async function writeConfig(endpoints: EndpointDescriptor[]): Promise<void
   await rename(tmp, config.endpointsConfigPath); // atomic swap; Gatus hot-reloads
 }
 
-/** Push a probe verdict to Gatus's external-endpoint API and return the HTTP status. */
+/** One line of the per-probe breakdown, as Gatus's external-endpoint API accepts it. */
+export interface ConditionResult {
+  condition: string;
+  success: boolean;
+}
+
+/**
+ * Flatten a verdict into the per-probe breakdown Gatus renders under "Conditions".
+ * These strings are shown verbatim on the status page and in the hub's uptime card, so keep them terse and in `resource: detail` shape.
+ * Only the primary resource can flip the verdict, so everything else is tagged as informational -- otherwise a healthy addon carrying a failed secondary check reads as a contradiction.
+ */
+export function buildConditions(r: ProbeResult): ConditionResult[] {
+  const { live, livenessError, primary, skipReason, perResource } = r.detail;
+  const conditions: ConditionResult[] = [
+    {
+      condition: live
+        ? "manifest reachable"
+        : `manifest unreachable${livenessError ? ` (${livenessError})` : ""}`,
+      success: live,
+    },
+  ];
+  for (const res of perResource) {
+    const informational = res.resource !== primary ? " (informational)" : "";
+    conditions.push({
+      condition: `${res.resource}: ${res.detail}${informational}`,
+      success: res.ok,
+    });
+  }
+  if (skipReason) {
+    conditions.push({ condition: `content not deep-checked (${skipReason})`, success: true });
+  }
+  return conditions;
+}
+
+/**
+ * Push a probe verdict to Gatus's external-endpoint API and return the HTTP status.
+ * The breakdown travels only as conditions: Gatus renders the `error` param as a separate block in the same tooltip and Discord alerts format the conditions themselves, so sending the message too would just duplicate it in both places.
+ */
 export async function pushResult(endpoint: EndpointDescriptor, r: ProbeResult): Promise<number> {
   const params = new URLSearchParams({
     success: String(r.success),
     duration: `${r.durationMs}ms`,
-    error: r.message,
   });
   const url = `${config.gatusUrl}/api/v1/endpoints/${endpoint.key}/external?${params.toString()}`;
   const res = await fetch(url, {
     method: "POST",
-    headers: { "User-Agent": USER_AGENT, Authorization: `Bearer ${config.pushToken}` },
+    headers: {
+      "User-Agent": USER_AGENT,
+      Authorization: `Bearer ${config.pushToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ conditionResults: buildConditions(r) }),
     signal: AbortSignal.timeout(15_000),
   });
   return res.status;
