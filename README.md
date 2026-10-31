@@ -33,7 +33,7 @@ Point `DISCORD_WEBHOOK_URL` at a channel in your Discord server to receive down 
 
 ## Development
 
-Requirements: Node.js, pnpm and Docker.
+Requirements: Node.js (version in `.nvmrc`), pnpm and Docker.
 
 ```sh
 pnpm install
