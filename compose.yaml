@@ -35,7 +35,7 @@ services:
   gatus:
     # TODO: change back to upstream image once https://github.com/TwiN/gatus/pull/1727 is merged.
     # image: ghcr.io/twin/gatus:stable
-    image: ghcr.io/stremio-community/gatus:sha-e1cdb84
+    image: ghcr.io/stremio-community/gatus:sha-4a41459
     restart: no
     depends_on:
       postgres:
