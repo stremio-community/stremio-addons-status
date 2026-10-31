@@ -14,7 +14,11 @@ const idsourcesMock = {
 };
 
 vi.mock("./http.js", () => ({
-  getJson: async (url: string) => router(url),
+  getJson: async (url: string) => {
+    const res = router(url);
+    return { ...res, attempts: [{ route: "direct", status: res.status, durationMs: 1 }] };
+  },
+  attemptsOf: () => [],
 }));
 
 vi.mock("./idsources.js", () => ({
