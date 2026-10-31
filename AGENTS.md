@@ -17,6 +17,7 @@ The running Gatus only reflects `../gatus` edits when built from it via `compose
 - Condition strings from `buildConditions` show in the status page tooltip and in Discord alerts, so keep them terse; the request-level detail belongs in their detail rows, which only the fork's details dialog renders.
 - Everything pushed to Gatus is public, and a configured addon's base URL can carry its config or API key: never push it, only paths relative to it (`buildConditions` strips it as a backstop).
 - Group order is encoded as leading spaces on group names (`GROUP_ORDER` in `gatus.ts`); the static groups in `gatus/config.d/00-base.yaml` hardcode matching counts.
+  Gatus stores an endpoint's group only when it first sees the key, so changing a count also needs a one-time `UPDATE endpoints SET endpoint_group = ...` in Postgres, or existing endpoints keep the old prefix and new ones split into a duplicate group.
 
 ## Verdict invariants
 
