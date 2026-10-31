@@ -3,6 +3,5 @@
 .git
 .env
 *.log
-grafana
 gatus
 worker/*.log
