@@ -146,7 +146,29 @@ describe("buildConditions", () => {
       BASE,
     );
     expect(stream.details).toHaveLength(20);
-    expect(stream.details?.[1].value).toHaveLength(512);
+    expect(Buffer.byteLength(stream.details![1].value)).toBeLessThanOrEqual(512);
+  });
+
+  it("counts the detail value limit in UTF-8 bytes without splitting a character", () => {
+    const [, stream] = buildConditions(
+      verdict({
+        live: true,
+        mode: "content",
+        primary: "stream",
+        perResource: [
+          {
+            resource: "stream",
+            ok: false,
+            summary: "unreachable",
+            details: [{ label: "Test ID", value: "é".repeat(300) }],
+          },
+        ],
+      }),
+      BASE,
+    );
+    const value = stream.details![1].value;
+    expect(Buffer.byteLength(value)).toBeLessThanOrEqual(512);
+    expect(value).toBe(`${"é".repeat(254)}…`);
   });
 });
 

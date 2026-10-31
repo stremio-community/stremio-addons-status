@@ -130,10 +130,21 @@ export interface ConditionResult {
 
 /** Gatus rejects a push exceeding these limits outright, so trim to fit instead of losing the whole verdict. */
 const MAX_DETAILS_PER_CONDITION = 20;
-const MAX_DETAIL_VALUE_LENGTH = 512;
+/** Measured in UTF-8 bytes, as Gatus measures it, not in JS string length. */
+const MAX_DETAIL_VALUE_BYTES = 512;
+const ELLIPSIS = "…";
 
-function truncate(text: string, max: number): string {
-  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+function truncate(text: string, maxBytes: number): string {
+  if (Buffer.byteLength(text) <= maxBytes) return text;
+  const budget = maxBytes - Buffer.byteLength(ELLIPSIS);
+  let out = "";
+  let bytes = 0;
+  for (const char of text) {
+    bytes += Buffer.byteLength(char);
+    if (bytes > budget) break;
+    out += char;
+  }
+  return out + ELLIPSIS;
 }
 
 /**
@@ -152,7 +163,7 @@ export function buildConditions(r: ProbeResult, baseUrl: string): ConditionResul
   ): ConditionResult => {
     const rows = details.slice(0, MAX_DETAILS_PER_CONDITION).map(({ label, value }) => ({
       label,
-      value: truncate(redact(value), MAX_DETAIL_VALUE_LENGTH),
+      value: truncate(redact(value), MAX_DETAIL_VALUE_BYTES),
     }));
     return { condition: redact(text), success, ...(rows.length > 0 ? { details: rows } : {}) };
   };
