@@ -43,3 +43,21 @@ pnpm start:dev
 ```
 
 `pnpm start:dev` starts Postgres, Gatus, Grafana and the WARP proxy in Docker, then runs the worker on your host with hot reload. `worker/.env.dev` only overrides what differs when the worker runs outside Docker. See `package.json` for the exact commands.
+
+### Running a local Gatus fork
+
+To test changes to the [Gatus fork](https://github.com/Stremio-Community/gatus), check it out next to this repo and add a git-ignored `compose.override.yaml`:
+
+```yaml
+services:
+  gatus:
+    image: gatus:dev
+    build:
+      context: ../gatus
+```
+
+`pnpm start:dev` won't rebuild the image when the fork changes. Rebuild it yourself:
+
+```sh
+docker compose up -d --build gatus
+```
