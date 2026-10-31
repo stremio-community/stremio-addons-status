@@ -7,6 +7,7 @@ The TypeScript `worker/` probes addons and pushes verdicts to Gatus, which rende
 
 We run our fork `Stremio-Community/gatus`, not upstream.
 The worker relies on two fork-only patches to the external-endpoint push API that upstream docs won't mention: an explicit `key` field (TwiN/gatus#1146) and a JSON body of condition results.
+Read the fork's source to check Gatus behaviour: it's usually checked out at `../gatus`; if not, search the local filesystem for it before falling back to GitHub.
 
 ## Cross-repo contracts
 
