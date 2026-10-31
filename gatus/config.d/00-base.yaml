@@ -20,8 +20,6 @@ ui:
       link: "https://stremio-addons.net"
     - name: "GitHub"
       link: "https://github.com/Stremio-Community/stremio-addons-status"
-    - name: "Grafana"
-      link: "${GRAFANA_PUBLIC_URL}/d/stremio-addons-home?kiosk"
 
 alerting:
   discord:
