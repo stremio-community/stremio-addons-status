@@ -8,6 +8,8 @@ export interface TestContent {
   id: string;
   /** Episode id (e.g. `tt0944947:1:1`) when `type` needs a specific video. */
   episodeId?: string;
+  /** Where the id came from (an ID source's name, or `own catalog`), shown next to it on the status page. */
+  source?: string;
 }
 
 interface CatalogResponse {
@@ -118,7 +120,9 @@ export async function resolveForPrefixes(idPrefixes: readonly string[]): Promise
   if (!source) return [];
   let pending = cache.get(source.name);
   if (!pending) {
-    pending = source.resolve();
+    pending = source
+      .resolve()
+      .then((contents) => contents.map((c) => ({ ...c, source: source.name })));
     cache.set(source.name, pending);
   }
   return pending;

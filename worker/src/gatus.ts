@@ -2,7 +2,7 @@ import { writeFile, rename, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { stringify } from "yaml";
 import { config, USER_AGENT } from "./config.js";
-import type { NormalizedAddon, ProbeResult } from "./types.js";
+import type { DetailRow, NormalizedAddon, ProbeResult } from "./types.js";
 
 export interface EndpointDescriptor {
   addon: NormalizedAddon;
@@ -77,6 +77,7 @@ export interface ExternalEndpointYaml {
 /**
  * Map descriptors to Gatus external-endpoint entries.
  * Discord alerts render only the group and name, which instances share, so the alert description carries the hostname.
+ * Gatus shows the description on both the triggered and the resolved alert, so it names the instance without claiming it is down.
  */
 export function buildExternalEndpoints(
   endpoints: EndpointDescriptor[],
@@ -92,7 +93,7 @@ export function buildExternalEndpoints(
           alerts: [
             {
               type: "discord",
-              description: e.hostname ? `addon down (${e.hostname})` : "addon down",
+              ...(e.hostname ? { description: e.hostname } : {}),
               "send-on-resolved": true,
               "failure-threshold": 1,
               "success-threshold": 1,
@@ -124,32 +125,69 @@ export async function writeConfig(endpoints: EndpointDescriptor[]): Promise<void
 export interface ConditionResult {
   condition: string;
   success: boolean;
+  details?: DetailRow[];
+}
+
+/** Gatus rejects a push exceeding these limits outright, so trim to fit instead of losing the whole verdict. */
+const MAX_DETAILS_PER_CONDITION = 20;
+/** Measured in UTF-8 bytes, as Gatus measures it, not in JS string length. */
+const MAX_DETAIL_VALUE_BYTES = 512;
+const ELLIPSIS = "…";
+
+function truncate(text: string, maxBytes: number): string {
+  if (Buffer.byteLength(text) <= maxBytes) return text;
+  const budget = maxBytes - Buffer.byteLength(ELLIPSIS);
+  let out = "";
+  let bytes = 0;
+  for (const char of text) {
+    bytes += Buffer.byteLength(char);
+    if (bytes > budget) break;
+    out += char;
+  }
+  return out + ELLIPSIS;
 }
 
 /**
- * Flatten a verdict into the per-probe breakdown Gatus renders under "Conditions".
- * These strings are shown verbatim on the status page and in the hub's uptime card, so keep them terse and in `resource: detail` shape.
+ * Flatten a verdict into the per-probe breakdown Gatus renders under "Conditions", each condition carrying the detail rows behind it.
+ * The condition strings are shown on the status page and in Discord alerts, so keep them terse and in `resource: verdict` shape.
  * Only the primary resource can flip the verdict, so everything else is tagged as informational -- otherwise a healthy addon carrying a failed secondary check reads as a contradiction.
+ * The status page is public and a base URL can carry the addon's config or API key, so every occurrence of it is stripped, leaving paths relative to the base.
  */
-export function buildConditions(r: ProbeResult): ConditionResult[] {
-  const { live, livenessError, primary, skipReason, perResource } = r.detail;
-  const conditions: ConditionResult[] = [
-    {
-      condition: live
-        ? "manifest reachable"
-        : `manifest unreachable${livenessError ? ` (${livenessError})` : ""}`,
-      success: live,
-    },
+export function buildConditions(r: ProbeResult, baseUrl: string): ConditionResult[] {
+  const { live, livenessError, manifestDetails, primary, skipReason, perResource } = r.detail;
+  const redact = (text: string) => (baseUrl ? text.replaceAll(baseUrl, "") : text);
+  const condition = (
+    text: string,
+    success: boolean,
+    details: DetailRow[] = [],
+  ): ConditionResult => {
+    const rows = details.slice(0, MAX_DETAILS_PER_CONDITION).map(({ label, value }) => ({
+      label,
+      value: truncate(redact(value), MAX_DETAIL_VALUE_BYTES),
+    }));
+    return { condition: redact(text), success, ...(rows.length > 0 ? { details: rows } : {}) };
+  };
+
+  const conditions = [
+    condition(
+      live
+        ? "manifest: reachable"
+        : `manifest: unreachable${livenessError ? ` (${livenessError})` : ""}`,
+      live,
+      manifestDetails,
+    ),
   ];
   for (const res of perResource) {
-    const informational = res.resource !== primary ? " (informational)" : "";
-    conditions.push({
-      condition: `${res.resource}: ${res.detail}${informational}`,
-      success: res.ok,
-    });
+    const decides = res.resource === primary;
+    conditions.push(
+      condition(`${res.resource}: ${res.summary}${decides ? "" : " (informational)"}`, res.ok, [
+        { label: "Role", value: decides ? "decides verdict" : "informational" },
+        ...res.details,
+      ]),
+    );
   }
   if (skipReason) {
-    conditions.push({ condition: `content not deep-checked (${skipReason})`, success: true });
+    conditions.push(condition(`content: not deep-checked (${skipReason})`, true));
   }
   return conditions;
 }
@@ -173,7 +211,7 @@ export async function pushResult(endpoint: EndpointDescriptor, r: ProbeResult): 
       Authorization: `Bearer ${config.pushToken}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ conditionResults: buildConditions(r) }),
+    body: JSON.stringify({ conditionResults: buildConditions(r, endpoint.addon.baseUrl) }),
     signal: AbortSignal.timeout(15_000),
   });
   return res.status;

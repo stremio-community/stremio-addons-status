@@ -16,10 +16,19 @@ export interface NormalizedAddon {
 
 export type ProbeMode = "content" | "liveness-only";
 
+/** One label/value line explaining how a check was evaluated, shown in the status page's details dialog. */
+export interface DetailRow {
+  label: string;
+  value: string;
+}
+
 export interface PerResourceResult {
   resource: string;
   ok: boolean;
-  detail: string;
+  /** Terse verdict (e.g. `movie 3 of 5 valid`), shown as the condition on the status page and in Discord alerts. */
+  summary: string;
+  /** How the verdict was reached: the requests made, the routes tried and why it failed. */
+  details: DetailRow[];
 }
 
 export interface ProbeResult {
@@ -32,6 +41,8 @@ export interface ProbeResult {
     live: boolean;
     /** Why the liveness floor failed, set only when live is false. */
     livenessError?: string;
+    /** How the manifest request went; empty when the probe never got that far. */
+    manifestDetails: DetailRow[];
     mode: ProbeMode;
     /** The resource whose outcome drove the verdict; the others only annotate. */
     primary?: string;

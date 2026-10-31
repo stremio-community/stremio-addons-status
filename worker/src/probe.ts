@@ -6,11 +6,17 @@ import type {
   Stream,
 } from "@stremio-addon/sdk";
 import { config } from "./config.js";
-import { getJson } from "./http.js";
+import { attemptsOf, getJson, type Attempt } from "./http.js";
 import { encodeId, errMsg } from "./utils.js";
 import { hasSourceFor, resolveForPrefixes, type TestContent } from "./idsources.js";
 import { logger } from "./logger.js";
-import type { NormalizedAddon, PerResourceResult, ProbeResult, ProbeMode } from "./types.js";
+import type {
+  DetailRow,
+  NormalizedAddon,
+  PerResourceResult,
+  ProbeResult,
+  ProbeMode,
+} from "./types.js";
 
 /**
  * Fields on a Stream that make it actually playable.
@@ -95,11 +101,38 @@ interface StreamResponse {
   streams?: unknown[];
 }
 
-function metaIsValid(m: unknown): m is MetaDetail {
+const META_REQUIRED_FIELDS = ["id", "type", "name"] as const;
+
+function missingMetaFields(m: unknown): string[] {
   const o = m as Record<string, unknown> | undefined;
-  return (
-    !!o && typeof o.id === "string" && typeof o.type === "string" && typeof o.name === "string"
-  );
+  return META_REQUIRED_FIELDS.filter((f) => typeof o?.[f] !== "string");
+}
+
+function isOkStatus(status: number): boolean {
+  return status >= 200 && status < 300;
+}
+
+function describeTestId(id: string, source: string | undefined): string {
+  return source ? `${id} (${source})` : id;
+}
+
+function attemptRow(a: Attempt): DetailRow {
+  const outcome = a.status !== undefined ? `HTTP ${a.status}` : (a.error ?? "failed");
+  return { label: "Attempt", value: `${a.route} · ${outcome} · ${a.durationMs}ms` };
+}
+
+/** Rows describing one request: what was asked for, over which routes, and why it failed (only when it did). */
+function requestRows(
+  path: string,
+  attempts: Attempt[],
+  { testId, reason }: { testId?: string; reason?: string } = {},
+): DetailRow[] {
+  return [
+    { label: "Request", value: path },
+    ...(testId ? [{ label: "Test ID", value: testId }] : []),
+    ...attempts.map(attemptRow),
+    ...(reason ? [{ label: "Reason", value: reason }] : []),
+  ];
 }
 
 async function firstEpisodeId(
@@ -112,7 +145,7 @@ async function firstEpisodeId(
       `${baseUrl}/meta/${type}/${encodeId(id)}.json`,
       config.timeouts.meta,
     );
-    if (status < 200 || status >= 300) return undefined;
+    if (!isOkStatus(status)) return undefined;
     return data?.meta?.videos?.[0]?.id;
   } catch {
     return undefined;
@@ -126,7 +159,8 @@ function fallbackEpisodeId(type: string, id: string): string | undefined {
 interface CatalogProbeResult {
   content?: TestContent;
   ok: boolean;
-  detail: string;
+  summary: string;
+  details: DetailRow[];
 }
 
 async function fetchCatalogCandidate(
@@ -137,21 +171,45 @@ async function fetchCatalogCandidate(
   const picked = pickCatalog(catalogs, preferredType);
   if (!picked) return null;
 
-  const url = `${baseUrl}/catalog/${picked.catalog.type}/${encodeId(picked.catalog.id)}${picked.extraPath}.json`;
-  const { status, data } = await getJson<CatalogResponse>(url, config.timeouts.catalog);
-  const metas = data?.metas ?? [];
-  const firstValid = metas.find(
-    (m) =>
-      m && typeof m.id === "string" && typeof m.type === "string" && typeof m.name === "string",
-  );
-  if (status >= 200 && status < 300 && firstValid) {
+  const path = `/catalog/${picked.catalog.type}/${encodeId(picked.catalog.id)}${picked.extraPath}.json`;
+  try {
+    const { status, data, attempts } = await getJson<CatalogResponse>(
+      baseUrl + path,
+      config.timeouts.catalog,
+    );
+    if (!isOkStatus(status)) {
+      return {
+        ok: false,
+        summary: `HTTP ${status}`,
+        details: requestRows(path, attempts, { reason: `addon responded with HTTP ${status}` }),
+      };
+    }
+    const metas = data?.metas ?? [];
+    const firstValid = metas.find((m) => missingMetaFields(m).length === 0);
+    if (!firstValid) {
+      const reason =
+        metas.length === 0
+          ? "returned no metas"
+          : `none of ${metas.length} metas has an id, type and name`;
+      return { ok: false, summary: "empty", details: requestRows(path, attempts, { reason }) };
+    }
     return {
       ok: true,
-      detail: `${metas.length} metas`,
-      content: { type: firstValid.type || picked.catalog.type, id: firstValid.id },
+      summary: `${metas.length} metas`,
+      details: requestRows(path, attempts),
+      content: {
+        type: firstValid.type || picked.catalog.type,
+        id: firstValid.id,
+        source: "own catalog",
+      },
+    };
+  } catch (e) {
+    return {
+      ok: false,
+      summary: "unreachable",
+      details: requestRows(path, attemptsOf(e), { reason: errMsg(e) }),
     };
   }
-  return { ok: false, detail: `empty (HTTP ${status})` };
 }
 
 function pickCandidate(candidates: TestContent[], types: string[]): TestContent | null {
@@ -172,7 +230,8 @@ interface StreamCheckResult {
   ok: boolean;
   total: number;
   valid: number;
-  detail: string;
+  summary: string;
+  details: DetailRow[];
 }
 
 function advertisedStreamProbeTypes(types: readonly string[]): TargetedStreamProbeType[] {
@@ -191,8 +250,8 @@ function pickCandidateForType(
   return candidate ? { ...candidate, probeType: type } : null;
 }
 
-function streamDetail(checks: StreamCheckResult[]): string {
-  return checks.map((c) => `${c.target.probeType} ${c.detail}`).join(" · ");
+function streamSummary(checks: StreamCheckResult[]): string {
+  return checks.map((c) => `${c.target.probeType} ${c.summary}`).join(" · ");
 }
 
 function streamVerdict(checks: StreamCheckResult[]): boolean {
@@ -201,13 +260,14 @@ function streamVerdict(checks: StreamCheckResult[]): boolean {
   return checks.some((c) => c.ok && c.valid > 1);
 }
 
-function missingStreamCheck(probeType: TargetedStreamProbeType, detail: string): StreamCheckResult {
+function missingStreamCheck(probeType: TargetedStreamProbeType, reason: string): StreamCheckResult {
   return {
     target: { probeType, type: probeType, id: "" },
     ok: false,
     total: 0,
     valid: 0,
-    detail,
+    summary: reason,
+    details: [{ label: "Skipped", value: `${probeType}: ${reason}` }],
   };
 }
 
@@ -230,42 +290,41 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
   log.debug({ step: "start", baseUrl: addon.baseUrl }, "probe start");
 
   // Step 1: Liveness floor.
-  let live: Manifest;
-  try {
-    const { status, data } = await getJson<Manifest>(
-      `${addon.baseUrl}/manifest.json`,
-      config.timeouts.manifest,
-    );
-    if (status < 200 || status >= 300 || !data || typeof data !== "object" || Array.isArray(data)) {
-      log.debug({ step: "manifest", status }, "manifest unreachable → DOWN");
-      return result(
-        false,
-        `manifest unreachable (HTTP ${status})`,
-        start,
-        {
-          live: false,
-          livenessError: `HTTP ${status}`,
-          mode: "content",
-          perResource,
-        },
-        "manifest",
-      );
-    }
-    live = data;
-  } catch (e) {
-    log.debug({ step: "manifest", err: errMsg(e) }, "manifest fetch threw → DOWN");
-    return result(
+  const manifestPath = "/manifest.json";
+  const unreachable = (reason: string, attempts: Attempt[]): ProbeResult =>
+    result(
       false,
-      `manifest unreachable (${errMsg(e)})`,
+      `manifest unreachable (${reason})`,
       start,
       {
         live: false,
-        livenessError: errMsg(e),
+        livenessError: reason,
+        manifestDetails: requestRows(manifestPath, attempts, { reason }),
         mode: "content",
         perResource,
       },
       "manifest",
     );
+  let live: Manifest;
+  let manifestDetails: DetailRow[];
+  try {
+    const { status, data, attempts } = await getJson<Manifest>(
+      addon.baseUrl + manifestPath,
+      config.timeouts.manifest,
+    );
+    if (!isOkStatus(status)) {
+      log.debug({ step: "manifest", status }, "manifest unreachable → DOWN");
+      return unreachable(`HTTP ${status}`, attempts);
+    }
+    if (!data || typeof data !== "object" || Array.isArray(data)) {
+      log.debug({ step: "manifest", status }, "manifest not a JSON object → DOWN");
+      return unreachable("response is not a JSON object", attempts);
+    }
+    live = data;
+    manifestDetails = requestRows(manifestPath, attempts);
+  } catch (e) {
+    log.debug({ step: "manifest", err: errMsg(e) }, "manifest fetch threw → DOWN");
+    return unreachable(errMsg(e), attemptsOf(e));
   }
 
   const norm = normalizeResources(live);
@@ -279,6 +338,7 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
     log.debug({ step: "verdict", mode: "liveness-only", reason }, `liveness-only UP: ${reason}`);
     return result(true, `manifest reachable · content not deep-checked (${reason})`, start, {
       live: true,
+      manifestDetails,
       mode: "liveness-only",
       skipReason: reason,
       perResource,
@@ -312,30 +372,24 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
 
   if (catalogTestable) {
     if (streamRes) {
-      const catalogChecks: Array<{ ok: boolean; detail: string }> = [];
+      const catalogChecks: CatalogProbeResult[] = [];
       if (advertisedStreamTypes.length > 0) {
         const results = await Promise.all(
-          advertisedStreamTypes.map(async (probeType) => {
-            try {
-              return {
-                probeType,
-                found: await fetchCatalogCandidate(addon.baseUrl, catalogs, probeType),
-              };
-            } catch (e) {
-              return { probeType, error: errMsg(e) };
-            }
-          }),
+          advertisedStreamTypes.map(async (probeType) => ({
+            probeType,
+            found: await fetchCatalogCandidate(addon.baseUrl, catalogs, probeType),
+          })),
         );
-        for (const { probeType, found, error } of results) {
-          if (error !== undefined) {
-            catalogChecks.push({ ok: false, detail: `${probeType} ${error}` });
-            log.debug({ step: "catalog", type: probeType, err: error }, "catalog fetch threw");
-            continue;
-          }
+        for (const { probeType, found } of results) {
           if (!found) continue;
-          catalogChecks.push({ ok: found.ok, detail: `${probeType} ${found.detail}` });
+          catalogChecks.push({ ...found, summary: `${probeType} ${found.summary}` });
           if (found.ok && found.content) {
             streamTargets.push({ ...found.content, probeType });
+          } else {
+            log.debug(
+              { step: "catalog", type: probeType, summary: found.summary },
+              "catalog failed",
+            );
           }
         }
       }
@@ -347,24 +401,22 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
                 (c) => streamRes.types.includes(c.type) && !isTargetedStreamProbeType(c.type),
               )
             : catalogs;
-        try {
-          const found = await fetchCatalogCandidate(addon.baseUrl, fallbackCatalogs);
-          if (found) {
-            catalogChecks.push({ ok: found.ok, detail: found.detail });
-            if (found.ok && found.content) {
-              streamTargets.push({ ...found.content, probeType: found.content.type });
-            }
+        const found = await fetchCatalogCandidate(addon.baseUrl, fallbackCatalogs);
+        if (found) {
+          catalogChecks.push(found);
+          if (found.ok && found.content) {
+            streamTargets.push({ ...found.content, probeType: found.content.type });
+          } else {
+            log.debug({ step: "catalog", summary: found.summary }, "catalog failed");
           }
-        } catch (e) {
-          catalogChecks.push({ ok: false, detail: errMsg(e) });
-          log.debug({ step: "catalog", err: errMsg(e) }, "catalog fetch threw");
         }
       }
       if (catalogChecks.length > 0) {
         perResource.push({
           resource: "catalog",
           ok: catalogChecks.every((check) => check.ok),
-          detail: catalogChecks.map((check) => check.detail).join(" · "),
+          summary: catalogChecks.map((check) => check.summary).join(" · "),
+          details: catalogChecks.flatMap((check) => check.details),
         });
       }
       test = streamTargets[0] ?? null;
@@ -379,28 +431,28 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
         );
       }
     } else {
-      try {
-        const found = await fetchCatalogCandidate(addon.baseUrl, catalogs);
-        if (found) {
-          perResource.push({ resource: "catalog", ok: found.ok, detail: found.detail });
-          test = found.content ?? null;
-          if (test) {
-            log.debug(
-              {
-                step: "testid",
-                source: "catalog",
-                type: test.type,
-                id: test.id,
-              },
-              "sourced test ID from own catalog",
-            );
-          } else {
-            log.debug({ step: "catalog", detail: found.detail }, "catalog empty/unreachable");
-          }
+      const found = await fetchCatalogCandidate(addon.baseUrl, catalogs);
+      if (found) {
+        perResource.push({
+          resource: "catalog",
+          ok: found.ok,
+          summary: found.summary,
+          details: found.details,
+        });
+        test = found.content ?? null;
+        if (test) {
+          log.debug(
+            {
+              step: "testid",
+              source: "catalog",
+              type: test.type,
+              id: test.id,
+            },
+            "sourced test ID from own catalog",
+          );
+        } else {
+          log.debug({ step: "catalog", summary: found.summary }, "catalog failed");
         }
-      } catch (e) {
-        perResource.push({ resource: "catalog", ok: false, detail: errMsg(e) });
-        log.debug({ step: "catalog", err: errMsg(e) }, "catalog fetch threw");
       }
     }
   }
@@ -507,14 +559,23 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
       resolvableTargets.map(async (target): Promise<StreamCheckResult> => {
         const type = target.type;
         const id = target.episodeId ?? target.id;
+        const path = `/stream/${type}/${encodeId(id)}.json`;
+        const testId = describeTestId(id, target.source);
         try {
-          const { status, data } = await getJson<StreamResponse>(
-            `${addon.baseUrl}/stream/${type}/${encodeId(id)}.json`,
+          const { status, data, attempts } = await getJson<StreamResponse>(
+            addon.baseUrl + path,
             config.timeouts.stream,
           );
           const streams = Array.isArray(data?.streams) ? data!.streams! : [];
           const valid = streams.filter(isPlayableStream).length;
-          const ok = status >= 200 && status < 300 && valid >= 1;
+          const ok = isOkStatus(status) && valid >= 1;
+          const reason = !isOkStatus(status)
+            ? `addon responded with HTTP ${status}`
+            : streams.length === 0
+              ? "returned no streams"
+              : valid === 0
+                ? `none of ${streams.length} streams has a playable source`
+                : undefined;
           log.debug(
             {
               step: "stream",
@@ -533,14 +594,22 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
             ok,
             total: streams.length,
             valid,
-            detail: `${valid} valid / ${streams.length} total`,
+            summary: isOkStatus(status) ? `${valid} of ${streams.length} valid` : `HTTP ${status}`,
+            details: requestRows(path, attempts, { testId, reason }),
           };
         } catch (e) {
           log.debug(
             { step: "stream", ok: false, err: errMsg(e), probeType: target.probeType, type, id },
             "stream fetch threw",
           );
-          return { target, ok: false, total: 0, valid: 0, detail: errMsg(e) };
+          return {
+            target,
+            ok: false,
+            total: 0,
+            valid: 0,
+            summary: "unreachable",
+            details: requestRows(path, attemptsOf(e), { testId, reason: errMsg(e) }),
+          };
         }
       }),
     );
@@ -549,11 +618,21 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
       total: streamChecks.reduce((sum, check) => sum + check.total, 0),
       valid: streamChecks.reduce((sum, check) => sum + check.valid, 0),
     };
+    const streamOk = streamVerdict(streamChecks);
+    const allStreamChecks = [...missingAdvertisedTargets, ...streamChecks];
+    const streamDetails = allStreamChecks.flatMap((check) => check.details);
+    if (!streamOk && streamChecks.some((check) => check.ok)) {
+      streamDetails.push({
+        label: "Reason",
+        value: "no target returned more than 1 playable stream",
+      });
+    }
     perResource.push({
       resource: "stream",
       // Unsourced targets only annotate: an ID source outage must not turn into a DOWN.
-      ok: streamVerdict(streamChecks),
-      detail: streamDetail([...missingAdvertisedTargets, ...streamChecks]),
+      ok: streamOk,
+      summary: streamSummary(allStreamChecks),
+      details: streamDetails,
     });
   }
 
@@ -566,23 +645,39 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
         "skipped meta check (borrowed imdb id owned by Cinemeta)",
       );
     } else {
+      const path = `/meta/${test.type}/${encodeId(test.id)}.json`;
+      const testId = describeTestId(test.id, test.source);
       try {
-        const { status, data } = await getJson<MetaResponse>(
-          `${addon.baseUrl}/meta/${test.type}/${encodeId(test.id)}.json`,
+        const { status, data, attempts } = await getJson<MetaResponse>(
+          addon.baseUrl + path,
           config.timeouts.meta,
         );
-        const ok = status >= 200 && status < 300 && metaIsValid(data?.meta);
+        const missing = missingMetaFields(data?.meta);
+        const reason = !isOkStatus(status)
+          ? `addon responded with HTTP ${status}`
+          : !data?.meta
+            ? "response has no meta object"
+            : missing.length > 0
+              ? `meta missing ${missing.join(", ")}`
+              : undefined;
+        const ok = reason === undefined;
         perResource.push({
           resource: "meta",
           ok,
-          detail: ok ? "valid" : `invalid (HTTP ${status})`,
+          summary: ok ? "valid" : isOkStatus(status) ? "invalid" : `HTTP ${status}`,
+          details: requestRows(path, attempts, { testId, reason }),
         });
         log.debug(
           { step: "meta", ok, status, type: test.type, id: test.id },
           `meta check ${ok ? "ok" : "fail"}`,
         );
       } catch (e) {
-        perResource.push({ resource: "meta", ok: false, detail: errMsg(e) });
+        perResource.push({
+          resource: "meta",
+          ok: false,
+          summary: "unreachable",
+          details: requestRows(path, attemptsOf(e), { testId, reason: errMsg(e) }),
+        });
         log.debug({ step: "meta", ok: false, err: errMsg(e) }, "meta fetch threw");
       }
     }
@@ -590,16 +685,22 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
 
   // Secondary resources: shape-only, annotate, never flip DOWN.
   if (test && norm.some((r) => r.name === "subtitles")) {
+    const id = test.episodeId ?? test.id;
+    const path = `/subtitles/${test.type}/${encodeId(id)}.json`;
     try {
-      const { data } = await getJson<{ subtitles?: unknown[] }>(
-        `${addon.baseUrl}/subtitles/${test.type}/${encodeId(test.episodeId ?? test.id)}.json`,
+      const { data, attempts } = await getJson<{ subtitles?: unknown[] }>(
+        addon.baseUrl + path,
         config.timeouts.meta,
       );
       const ok = Array.isArray(data?.subtitles);
       perResource.push({
         resource: "subtitles",
         ok,
-        detail: ok ? `${data!.subtitles!.length} subs` : "no array",
+        summary: ok ? `${data!.subtitles!.length} found` : "invalid",
+        details: requestRows(path, attempts, {
+          testId: describeTestId(id, test.source),
+          reason: ok ? undefined : "response has no subtitles array",
+        }),
       });
       log.debug({ step: "subtitles", ok }, "subtitles check (annotation only)");
     } catch {
@@ -612,7 +713,7 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
   const okResources = perResource.filter((r) => r.ok);
   const message =
     okResources.length > 0
-      ? okResources.map((r) => `${r.resource}: ${r.detail}`).join(" · ")
+      ? okResources.map((r) => `${r.resource}: ${r.summary}`).join(" · ")
       : "manifest reachable";
 
   if (primaryResult?.ok) {
@@ -622,6 +723,7 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
     );
     return result(true, message, start, {
       live: true,
+      manifestDetails,
       mode: "content",
       primary,
       perResource,
@@ -630,8 +732,8 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
   }
 
   // Manifest up but primary content failed.
-  // Push the full per-resource breakdown (not just the primary) so Gatus's failure tooltip shows exactly what was probed and what each resource returned.
-  const breakdown = perResource.map((r) => `${r.resource}: ${r.detail}`).join(" · ");
+  // The log message carries the full per-resource breakdown, not just the primary, so a DOWN is explainable from the logs alone.
+  const breakdown = perResource.map((r) => `${r.resource}: ${r.summary}`).join(" · ");
   const downMsg = breakdown
     ? `manifest up · ${breakdown}`
     : `manifest up · ${primary} check failed`;
@@ -645,6 +747,7 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
     start,
     {
       live: true,
+      manifestDetails,
       mode: "content",
       primary,
       perResource,

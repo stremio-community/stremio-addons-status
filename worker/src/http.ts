@@ -1,6 +1,7 @@
 import { fetch, type Dispatcher } from "undici";
 import { socksDispatcher } from "fetch-socks";
 import { config, USER_AGENT } from "./config.js";
+import { errMsg } from "./utils.js";
 
 const proxy = makeDispatcher();
 
@@ -10,13 +11,47 @@ function looksBlocked(status: number): boolean {
   return BLOCKED_STATUSES.has(status) || status >= 500;
 }
 
-type JsonResult<T> = { status: number; data: T | undefined };
+export type Route = "WARP" | "direct";
+
+/** One try of a request over one route; `error` replaces `status` when the transport failed. */
+export interface Attempt {
+  route: Route;
+  status?: number;
+  error?: string;
+  durationMs: number;
+}
+
+type JsonResult<T> = { status: number; data: T | undefined; attempts: Attempt[] };
+
+/** Thrown when every attempted route failed at the transport level, so callers can still report what was tried. */
+export class RequestFailedError extends Error {
+  constructor(
+    message: string,
+    readonly attempts: Attempt[],
+  ) {
+    super(message);
+  }
+}
+
+/** The routes tried before a request threw, or none when the error didn't come from getJson. */
+export function attemptsOf(e: unknown): Attempt[] {
+  return e instanceof RequestFailedError ? e.attempts : [];
+}
+
+/** undici reports every network failure as "fetch failed" and hides the useful part in `cause`. */
+function describeError(e: unknown, timeout: number): string {
+  if (e instanceof Error && e.name === "TimeoutError") return `timed out after ${timeout}ms`;
+  const cause =
+    e instanceof Error ? (e.cause as { code?: string; message?: string } | undefined) : undefined;
+  const detail = cause?.code ?? cause?.message;
+  return detail ? `${errMsg(e)} (${detail})` : errMsg(e);
+}
 
 async function fetchJson<T>(
   url: string,
   timeout: number,
   dispatcher: Dispatcher | undefined,
-): Promise<JsonResult<T>> {
+): Promise<Omit<JsonResult<T>, "attempts">> {
   const res = await fetch(url, {
     headers: { "User-Agent": USER_AGENT, Accept: "application/json" },
     redirect: "follow",
@@ -39,20 +74,39 @@ async function fetchJson<T>(
  * GET as JSON, WARP-first with a direct fallback.
  * If the proxied request is blocked or its transport fails, retry once directly before giving up.
  * This rescues addons that block WARP egress IPs (e.g. Torrentio) while still dodging addons that block datacenter IPs.
- * `data` is undefined for a non-JSON body; throws only if every attempted route throws.
+ * `data` is undefined for a non-JSON body; `attempts` lists every route tried, in order.
+ * Throws a RequestFailedError only if every attempted route throws.
  */
 export async function getJson<T = unknown>(url: string, timeout: number): Promise<JsonResult<T>> {
-  if (!proxy) return fetchJson<T>(url, timeout, undefined); // no proxy configured -> direct only
+  const attempts: Attempt[] = [];
+  const attempt = async (route: Route, dispatcher: Dispatcher | undefined) => {
+    const start = Date.now();
+    try {
+      const res = await fetchJson<T>(url, timeout, dispatcher);
+      attempts.push({ route, status: res.status, durationMs: Date.now() - start });
+      return { ...res, attempts };
+    } catch (e) {
+      attempts.push({ route, error: describeError(e, timeout), durationMs: Date.now() - start });
+      throw e;
+    }
+  };
+
   try {
-    const viaProxy = await fetchJson<T>(url, timeout, proxy);
+    if (!proxy) return await attempt("direct", undefined); // no proxy configured -> direct only
+    let viaProxy: JsonResult<T>;
+    try {
+      viaProxy = await attempt("WARP", proxy);
+    } catch {
+      return await attempt("direct", undefined); // proxy transport failed -> direct (may throw)
+    }
     if (!looksBlocked(viaProxy.status)) return viaProxy;
     try {
-      return await fetchJson<T>(url, timeout, undefined); // proxy blocked -> try direct
+      return await attempt("direct", undefined); // proxy blocked -> try direct
     } catch {
       return viaProxy; // direct also failed; report the proxy result
     }
   } catch {
-    return fetchJson<T>(url, timeout, undefined); // proxy transport failed -> direct (may throw)
+    throw new RequestFailedError(attempts.at(-1)?.error ?? "request failed", attempts);
   }
 }
 
