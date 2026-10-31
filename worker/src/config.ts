@@ -7,7 +7,7 @@ export const config = {
   discordWebhookUrl: process.env.DISCORD_WEBHOOK_URL || "",
   endpointsConfigPath: process.env.ENDPOINTS_CONFIG_PATH || "/config/10-endpoints.yaml",
 
-  probeInterval: parseDuration(process.env.PROBE_INTERVAL, 15 * 60_000),
+  probeInterval: parseDuration(process.env.PROBE_INTERVAL, 5 * 60_000),
   listRefresh: parseDuration(process.env.LIST_REFRESH, 60 * 60_000),
   concurrency: parseNumber(process.env.CONCURRENCY, 8),
 
