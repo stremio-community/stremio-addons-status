@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { buildConditions } from "./gatus.js";
-import type { ProbeResult } from "./types.js";
+import { buildConditions, buildEndpoints, buildExternalEndpoints } from "./gatus.js";
+import type { NormalizedAddon, ProbeResult } from "./types.js";
 
 function verdict(detail: ProbeResult["detail"]): ProbeResult {
   return { success: true, durationMs: 1, message: "", detail };
@@ -62,5 +62,48 @@ describe("buildConditions", () => {
       { condition: "stream: 0 valid / 12 total", success: false },
       { condition: "subtitles: 3 subs (informational)", success: true },
     ]);
+  });
+});
+
+function addon(manifestUrl: string): NormalizedAddon {
+  return {
+    uuid: "0b6c1a2e-0000-4000-8000-000000000000",
+    slug: "aiostreams",
+    name: "AIOStreams",
+    manifestUrl,
+    baseUrl: manifestUrl.replace(/\/manifest\.json$/, ""),
+    stars: 0,
+    categories: [],
+    instanceOf: "AIOStreams",
+  };
+}
+
+describe("buildEndpoints", () => {
+  it("exposes only the hostname, never the configured path", () => {
+    const [ep] = buildEndpoints([addon("https://aio.example.org/u/secret-api-key/manifest.json")]);
+    expect(ep.hostname).toBe("aio.example.org");
+  });
+
+  it("leaves the hostname empty when the manifest URL won't parse", () => {
+    const [ep] = buildEndpoints([addon("not a url")]);
+    expect(ep.hostname).toBe("");
+  });
+});
+
+describe("buildExternalEndpoints", () => {
+  it("names the instance's hostname in its alert description", () => {
+    const [entry] = buildExternalEndpoints(
+      buildEndpoints([addon("https://aio.example.org/manifest.json")]),
+      true,
+    );
+    expect(entry.alerts?.[0].description).toBe("addon down (aio.example.org)");
+  });
+
+  it("omits alerts when Discord is disabled", () => {
+    const [entry] = buildExternalEndpoints(
+      buildEndpoints([addon("https://aio.example.org/manifest.json")]),
+      false,
+    );
+    expect(entry.alerts).toBeUndefined();
   });
 });
