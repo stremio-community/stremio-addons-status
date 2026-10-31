@@ -38,7 +38,6 @@ endpoints:
       - "[BODY] == OK"
     alerts:
       - type: discord
-        description: "stremio-addons.net unreachable"
         send-on-resolved: true
         failure-threshold: 2
         success-threshold: 1
@@ -54,7 +53,6 @@ endpoints:
       - "[STATUS] == any(200, 400, 405)"
     alerts:
       - type: discord
-        description: "Stremio API unreachable"
         send-on-resolved: true
         failure-threshold: 2
         success-threshold: 1
@@ -70,7 +68,6 @@ endpoints:
       - "has([BODY].id) == true"
     alerts:
       - type: discord
-        description: "Cinemeta unreachable"
         send-on-resolved: true
         failure-threshold: 2
         success-threshold: 1
@@ -85,7 +82,6 @@ endpoints:
       - "[STATUS] == 200"
     alerts:
       - type: discord
-        description: "Stremio Web Player unreachable"
         send-on-resolved: true
         failure-threshold: 2
         success-threshold: 1
@@ -100,7 +96,6 @@ endpoints:
       - "[STATUS] == 200"
     alerts:
       - type: discord
-        description: "Stremio Website unreachable"
         send-on-resolved: true
         failure-threshold: 2
         success-threshold: 1
@@ -115,7 +110,6 @@ endpoints:
       - "[STATUS] == 200"
     alerts:
       - type: discord
-        description: "Real-Debrid API unreachable"
         send-on-resolved: true
         failure-threshold: 2
         success-threshold: 1
@@ -130,7 +124,6 @@ endpoints:
       - "[STATUS] == 200"
     alerts:
       - type: discord
-        description: "AllDebrid API unreachable"
         send-on-resolved: true
         failure-threshold: 2
         success-threshold: 1
@@ -145,7 +138,6 @@ endpoints:
       - "[STATUS] == any(200, 401)"
     alerts:
       - type: discord
-        description: "Premiumize API unreachable"
         send-on-resolved: true
         failure-threshold: 2
         success-threshold: 1
@@ -160,7 +152,6 @@ endpoints:
       - "[STATUS] == any(200, 401)"
     alerts:
       - type: discord
-        description: "TorBox API unreachable"
         send-on-resolved: true
         failure-threshold: 2
         success-threshold: 1

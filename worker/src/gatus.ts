@@ -77,6 +77,7 @@ export interface ExternalEndpointYaml {
 /**
  * Map descriptors to Gatus external-endpoint entries.
  * Discord alerts render only the group and name, which instances share, so the alert description carries the hostname.
+ * Gatus shows the description on both the triggered and the resolved alert, so it names the instance without claiming it is down.
  */
 export function buildExternalEndpoints(
   endpoints: EndpointDescriptor[],
@@ -92,7 +93,7 @@ export function buildExternalEndpoints(
           alerts: [
             {
               type: "discord",
-              description: e.hostname ? `addon down (${e.hostname})` : "addon down",
+              ...(e.hostname ? { description: e.hostname } : {}),
               "send-on-resolved": true,
               "failure-threshold": 1,
               "success-threshold": 1,

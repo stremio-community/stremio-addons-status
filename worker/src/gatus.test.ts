@@ -176,12 +176,17 @@ describe("buildEndpoints", () => {
 });
 
 describe("buildExternalEndpoints", () => {
-  it("names the instance's hostname in its alert description", () => {
+  it("uses the instance's hostname as its alert description", () => {
     const [entry] = buildExternalEndpoints(
       buildEndpoints([addon("https://aio.example.org/manifest.json")]),
       true,
     );
-    expect(entry.alerts?.[0].description).toBe("addon down (aio.example.org)");
+    expect(entry.alerts?.[0].description).toBe("aio.example.org");
+  });
+
+  it("omits the alert description when there is no hostname", () => {
+    const [entry] = buildExternalEndpoints(buildEndpoints([addon("not a url")]), true);
+    expect(entry.alerts?.[0]).not.toHaveProperty("description");
   });
 
   it("omits alerts when Discord is disabled", () => {
