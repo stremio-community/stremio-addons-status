@@ -23,13 +23,14 @@ function groupFor(addon: NormalizedAddon): string {
  * Gatus has no group-ordering config and sorts alphabetically via localeCompare (TwiN/gatus#553), so we encode order as leading spaces:
  * localeCompare sorts more-spaces-first and HTML collapses leading spaces so they stay invisible.
  * The endpoint key is the addon's explicit uuid (independent of group and name), so prefixing spaces onto the group is purely cosmetic and never touches identity or history.
- * The static base groups hardcode their matching space counts in 00-base.yaml; keep the two in sync (Stremio Platform = 2 spaces, Debrid Services = 1, Infrastructure = 0).
+ * The static base groups hardcode their matching space counts in 00-base.yaml; keep the two in sync (Stremio Platform = 3 spaces, Debrid Services = 2, Services = 1, Infrastructure = 0).
  */
 const GROUP_ORDER = [
   "Addons",
   "Addon Instances",
   "Stremio Platform",
   "Debrid Services",
+  "Services",
   "Infrastructure",
 ];
 /** Highest rank in the scheme; leading-space count for a group is ORDER_MAX - rank (more spaces sort first). */
