@@ -11,8 +11,8 @@ ui:
   # Empty hides the subtitle; omitting the key falls back to the Gatus default.
   header-subtitle: ""
   dashboard-heading: "Uptime"
-  dashboard-subheading: "Real status checks for Stremio addons and services. Powered by Gatus and stremio-addons.net."
-  description: "Monitors the health of Stremio addons. Powered by Gatus and stremio-addons.net."
+  dashboard-subheading: "Real status checks for Stremio addons and services."
+  description: "Monitors the health of Stremio addons."
   default-sort-by: group
   logo: "https://stremio-addons.net/favicon.ico"
   link: "/"
