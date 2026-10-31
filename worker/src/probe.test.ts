@@ -101,8 +101,8 @@ describe("probe", () => {
     expect(r.success).toBe(false);
     expect(r.detail.mode).toBe("content");
     expect(r.error).toBe("stream");
-    expect(r.message).toContain("stream: movie 1 valid / 1 total");
-    expect(r.message).toContain("series 1 valid / 1 total");
+    expect(r.message).toContain("stream: movie 1 of 1 valid");
+    expect(r.message).toContain("series 1 of 1 valid");
   });
 
   it("catalog-less imdb scraper ⇒ UP when either movie or series returns more than 1 playable stream", async () => {
@@ -124,8 +124,8 @@ describe("probe", () => {
     expect(r.success).toBe(true);
     expect(r.detail.mode).toBe("content");
     expect(r.detail.streamCounts).toEqual({ total: 3, valid: 3 });
-    expect(r.message).toContain("stream: movie 1 valid / 1 total");
-    expect(r.message).toContain("series 2 valid / 2 total");
+    expect(r.message).toContain("stream: movie 1 of 1 valid");
+    expect(r.message).toContain("series 2 of 2 valid");
   });
 
   it("catalog-less imdb scraper ⇒ UP when movie has more than 1 playable stream and series fails", async () => {
@@ -145,8 +145,8 @@ describe("probe", () => {
     ]);
     const r = await probe(m);
     expect(r.success).toBe(true);
-    expect(r.message).toContain("movie 2 valid / 2 total");
-    expect(r.message).toContain("series 0 valid / 1 total");
+    expect(r.message).toContain("movie 2 of 2 valid");
+    expect(r.message).toContain("series 0 of 1 valid");
   });
 
   it("dual-target verdict requires a successful stream response", async () => {
@@ -166,8 +166,8 @@ describe("probe", () => {
     ]);
     const r = await probe(m);
     expect(r.success).toBe(false);
-    expect(r.message).toContain("movie 1 valid / 1 total");
-    expect(r.message).toContain("series 2 valid / 2 total");
+    expect(r.message).toContain("movie 1 of 1 valid");
+    expect(r.message).toContain("series HTTP 500");
   });
 
   it("catalog-less imdb scraper ⇒ DOWN when both movie and series return no playable streams", async () => {
@@ -187,8 +187,8 @@ describe("probe", () => {
     ]);
     const r = await probe(m);
     expect(r.success).toBe(false);
-    expect(r.message).toContain("movie 0 valid / 1 total");
-    expect(r.message).toContain("series 0 valid / 1 total");
+    expect(r.message).toContain("movie 0 of 1 valid");
+    expect(r.message).toContain("series 0 of 1 valid");
   });
 
   it("catalog-less imdb scraper advertising movie+series keeps the single-target rule when only one target is sourceable", async () => {
@@ -205,7 +205,7 @@ describe("probe", () => {
     const r = await probe(m);
     expect(r.success).toBe(true);
     expect(r.detail.streamCounts).toEqual({ total: 1, valid: 1 });
-    expect(r.message).toContain("movie 1 valid / 1 total");
+    expect(r.message).toContain("movie 1 of 1 valid");
     expect(r.message).toContain("series no test ID source");
   });
 
@@ -230,8 +230,8 @@ describe("probe", () => {
     ]);
     const r = await probe(m);
     expect(r.success).toBe(false);
-    expect(r.message).toContain("movie 1 valid / 1 total");
-    expect(r.message).toContain("series 1 valid / 1 total");
+    expect(r.message).toContain("movie 1 of 1 valid");
+    expect(r.message).toContain("series 1 of 1 valid");
   });
 
   it("catalog-less non-imdb scraper advertising movie+series keeps the single-target rule when series lacks an episode ID", async () => {
@@ -254,7 +254,7 @@ describe("probe", () => {
     ]);
     const r = await probe(m);
     expect(r.success).toBe(true);
-    expect(r.message).toContain("movie 1 valid / 1 total");
+    expect(r.message).toContain("movie 1 of 1 valid");
     expect(r.message).toContain("series no episode ID");
   });
 
@@ -302,7 +302,7 @@ describe("probe", () => {
     expect(r.success).toBe(true);
     expect(r.detail.mode).toBe("content");
     expect(r.detail.streamCounts).toEqual({ total: 1, valid: 1 });
-    expect(r.message).toContain("stream: anime 1 valid / 1 total");
+    expect(r.message).toContain("stream: anime 1 of 1 valid");
   });
 
   it("mixed-type scraper falls back to a sourceable anime candidate as a single target", async () => {
@@ -322,7 +322,7 @@ describe("probe", () => {
     expect(r.success).toBe(true);
     expect(r.detail.mode).toBe("content");
     expect(r.detail.streamCounts).toEqual({ total: 1, valid: 1 });
-    expect(r.message).toContain("stream: anime 1 valid / 1 total");
+    expect(r.message).toContain("stream: anime 1 of 1 valid");
     expect(r.message).not.toContain("no test ID source");
   });
 
@@ -402,7 +402,7 @@ describe("probe", () => {
     expect(r.success).toBe(false);
     expect(r.detail.mode).toBe("content");
     expect(r.error).toBe("stream");
-    expect(r.message).toContain("anime 0 valid / 0 total");
+    expect(r.message).toContain("anime HTTP 500");
     expect(resolve).not.toHaveBeenCalled();
   });
 
@@ -460,8 +460,8 @@ describe("probe", () => {
     ]);
     const r = await probe(m);
     expect(r.success).toBe(true);
-    expect(r.message).toContain("movie 1 valid / 1 total");
-    expect(r.message).toContain("series 2 valid / 2 total");
+    expect(r.message).toContain("movie 1 of 1 valid");
+    expect(r.message).toContain("series 2 of 2 valid");
   });
 
   it("dual-target stream fetch that throws counts as that target failing", async () => {
@@ -487,8 +487,10 @@ describe("probe", () => {
     const r = await probe(m);
     expect(r.success).toBe(false);
     expect(r.error).toBe("stream");
-    expect(r.message).toContain("movie 1 valid / 1 total");
-    expect(r.message).toContain("series socket hang up");
+    expect(r.message).toContain("movie 1 of 1 valid");
+    expect(r.message).toContain("series unreachable");
+    const stream = r.detail.perResource.find((p) => p.resource === "stream");
+    expect(stream?.details).toContainEqual({ label: "Reason", value: "socket hang up" });
   });
 
   it("catalog annotation reports failed catalog probes even when another target is sourced", async () => {
@@ -513,8 +515,11 @@ describe("probe", () => {
     const catalog = r.detail.perResource.find((p) => p.resource === "catalog");
     expect(r.success).toBe(true);
     expect(catalog?.ok).toBe(false);
-    expect(catalog?.detail).toContain("movie empty (HTTP 500)");
-    expect(catalog?.detail).toContain("series 1 metas");
+    expect(catalog?.summary).toBe("movie HTTP 500 · series 1 metas");
+    expect(catalog?.details).toContainEqual({
+      label: "Reason",
+      value: "addon responded with HTTP 500",
+    });
   });
 
   it("movie-only stream addon keeps single-target ≥1 playable stream ⇒ UP behavior", async () => {
@@ -531,7 +536,7 @@ describe("probe", () => {
     const r = await probe(m);
     expect(r.success).toBe(true);
     expect(r.detail.streamCounts).toEqual({ total: 1, valid: 1 });
-    expect(r.message).toContain("stream: movie 1 valid / 1 total");
+    expect(r.message).toContain("stream: movie 1 of 1 valid");
   });
 
   it("(d) catalog/meta-only addon -> UP via catalog path, no stream check", async () => {
@@ -572,7 +577,7 @@ describe("probe", () => {
     expect(r.success).toBe(false);
     expect(r.error).toBe("stream");
     // Failure message carries the full per-resource breakdown so Gatus's tooltip shows what was probed.
-    expect(r.message).toContain("stream: movie 0 valid / 2 total");
+    expect(r.message).toContain("stream: movie 0 of 2 valid");
     expect(r.detail.live).toBe(true);
   });
 
@@ -623,5 +628,123 @@ describe("probe", () => {
     const r = await probe(m);
     expect(r.success).toBe(true);
     expect(r.detail.mode).toBe("liveness-only");
+  });
+
+  it("(f3) manifest that isn't a JSON object ⇒ DOWN with that reason", async () => {
+    const m = addon({ resources: ["stream"], types: ["movie"] });
+    router = routes([["/manifest.json", { status: 200, data: undefined }]]);
+    const r = await probe(m);
+    expect(r.success).toBe(false);
+    expect(r.detail.livenessError).toBe("response is not a JSON object");
+    expect(r.detail.manifestDetails).toEqual([
+      { label: "Request", value: "/manifest.json" },
+      { label: "Attempt", value: "direct · HTTP 200 · 1ms" },
+      { label: "Reason", value: "response is not a JSON object" },
+    ]);
+  });
+});
+
+describe("probe detail rows", () => {
+  it("lists each stream request with its borrowed test ID, routes tried and failure reason", async () => {
+    const m = addon({
+      types: ["movie", "series"],
+      resources: [{ name: "stream", types: ["movie", "series"], idPrefixes: ["tt"] }],
+    });
+    idsourcesMock.hasSourceFor = () => true;
+    idsourcesMock.resolveForPrefixes = async () => [
+      { type: "movie", id: "tt1", source: "cinemeta" },
+      { type: "series", id: "tt2", episodeId: "tt2:1:1", source: "cinemeta" },
+    ];
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      ["/stream/movie/tt1.json", { status: 200, data: { streams: [{ title: "no source" }] } }],
+      ["/stream/series/tt2:1:1.json", { status: 200, data: { streams: [] } }],
+    ]);
+    const r = await probe(m);
+    const stream = r.detail.perResource.find((p) => p.resource === "stream");
+    expect(stream?.summary).toBe("movie 0 of 1 valid · series 0 of 0 valid");
+    expect(stream?.details).toEqual([
+      { label: "Request", value: "/stream/movie/tt1.json" },
+      { label: "Test ID", value: "tt1 (cinemeta)" },
+      { label: "Attempt", value: "direct · HTTP 200 · 1ms" },
+      { label: "Reason", value: "none of 1 streams has a playable source" },
+      { label: "Request", value: "/stream/series/tt2:1:1.json" },
+      { label: "Test ID", value: "tt2:1:1 (cinemeta)" },
+      { label: "Attempt", value: "direct · HTTP 200 · 1ms" },
+      { label: "Reason", value: "returned no streams" },
+    ]);
+    expect(r.detail.manifestDetails).toEqual([
+      { label: "Request", value: "/manifest.json" },
+      { label: "Attempt", value: "direct · HTTP 200 · 1ms" },
+    ]);
+  });
+
+  it("explains a dual-target DOWN where each target passed on its own", async () => {
+    const m = addon({
+      types: ["movie", "series"],
+      resources: [{ name: "stream", types: ["movie", "series"], idPrefixes: ["tt"] }],
+    });
+    idsourcesMock.hasSourceFor = () => true;
+    idsourcesMock.resolveForPrefixes = async () => [
+      { type: "movie", id: "tt1" },
+      { type: "series", id: "tt2", episodeId: "tt2:1:1" },
+    ];
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      ["/stream/movie/tt1.json", { status: 200, data: { streams: [PLAYABLE] } }],
+      ["/stream/series/tt2:1:1.json", { status: 200, data: { streams: [PLAYABLE] } }],
+    ]);
+    const r = await probe(m);
+    const stream = r.detail.perResource.find((p) => p.resource === "stream");
+    expect(r.success).toBe(false);
+    expect(stream?.details.at(-1)).toEqual({
+      label: "Reason",
+      value: "no target returned more than 1 playable stream",
+    });
+  });
+
+  it("names the fields a meta response is missing and marks own-catalog test IDs", async () => {
+    const m = addon({
+      types: ["movie"],
+      resources: ["catalog", "meta"],
+      catalogs: [{ type: "movie", id: "top", name: "Top" }],
+    });
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/catalog/movie/top.json",
+        { status: 200, data: { metas: [{ id: "m1", type: "movie", name: "M" }] } },
+      ],
+      ["/meta/movie/m1.json", { status: 200, data: { meta: { id: "m1", type: "movie" } } }],
+    ]);
+    const r = await probe(m);
+    const meta = r.detail.perResource.find((p) => p.resource === "meta");
+    expect(meta?.summary).toBe("invalid");
+    expect(meta?.details).toEqual([
+      { label: "Request", value: "/meta/movie/m1.json" },
+      { label: "Test ID", value: "m1 (own catalog)" },
+      { label: "Attempt", value: "direct · HTTP 200 · 1ms" },
+      { label: "Reason", value: "meta missing name" },
+    ]);
+  });
+
+  it("explains an empty catalog whose metas lack required fields", async () => {
+    const m = addon({
+      types: ["movie"],
+      resources: ["catalog"],
+      catalogs: [{ type: "movie", id: "top", name: "Top" }],
+    });
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      ["/catalog/movie/top.json", { status: 200, data: { metas: [{ id: "m1" }] } }],
+    ]);
+    const r = await probe(m);
+    const catalog = r.detail.perResource.find((p) => p.resource === "catalog");
+    expect(r.success).toBe(false);
+    expect(catalog?.summary).toBe("empty");
+    expect(catalog?.details.at(-1)).toEqual({
+      label: "Reason",
+      value: "none of 1 metas has an id, type and name",
+    });
   });
 });
