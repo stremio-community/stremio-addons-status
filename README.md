@@ -8,7 +8,7 @@ It tracks **every approved addon** on [stremio-addons.net](https://stremio-addon
 
 ## How it works
 
-We use [Gatus](https://github.com/TwiN/gatus) for the uptime dashboard plus a small custom-built worker service. The worker fetches the addon list, probes each addon, and reports each verdict to Gatus. Grafana reads Gatus's database for analytics.
+We use [our fork of Gatus](https://github.com/Stremio-Community/gatus) for the uptime dashboard plus a small custom-built worker service. The fork is stock [Gatus](https://github.com/TwiN/gatus) with a few patches to its external-endpoint push API (stable endpoint keys and per-probe results) that aren't upstream yet. The worker fetches the addon list, probes each addon, and reports each verdict to Gatus. Grafana reads Gatus's database for analytics.
 
 Requests go through a Cloudflare WARP proxy first, falling back to a direct connection when WARP is blocked so an addon is only DOWN when it's unreachable from _both_ routes, not because it happens to block one IP or the other.
 
@@ -33,14 +33,13 @@ Point `DISCORD_WEBHOOK_URL` at a channel in your Discord server to receive down 
 
 ## Development
 
-This is a pnpm workspace. Install once from the repo root, then use the worker's scripts with `-F worker`.
-
-Docker Compose is the production setup. For local development, run the infrastructure in Docker but the worker on the host with hot reload:
+Requirements: Node.js, pnpm and Docker.
 
 ```sh
 pnpm install
-cp worker/.env.example worker/.env.dev             # host-run overrides
-pnpm -F worker start:dev                           # worker on the host, watches src/
+cp .env.example .env
+cp worker/.env.example worker/.env.dev
+pnpm start:dev
 ```
 
-`start:dev` loads the repo-root `.env` first, then `worker/.env.dev` on top. The dev file only overrides what differs when the worker runs on the host instead of inside compose (Gatus URL, proxy, endpoints path); see `worker/.env.example` for details.
+`pnpm start:dev` starts Postgres, Gatus, Grafana and the WARP proxy in Docker, then runs the worker on your host with hot reload. `worker/.env.dev` only overrides what differs when the worker runs outside Docker. See `package.json` for the exact commands.
