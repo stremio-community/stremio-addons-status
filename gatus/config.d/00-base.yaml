@@ -11,7 +11,7 @@ ui:
   description: "Monitors the health of Stremio addons. Powered by Gatus and stremio-addons.net."
   default-sort-by: group
   logo: "https://stremio-addons.net/favicon.ico"
-  link: "https://stremio-addons.net"
+  link: "/"
   # Hide the Gatus footer social links.
   custom-css: |
     #social { display: none !important; }
