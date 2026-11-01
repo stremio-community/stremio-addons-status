@@ -3,16 +3,20 @@ import { config, USER_AGENT } from "./config.js";
 import type { NormalizedAddon } from "./types.js";
 
 export async function fetchAllAddons(): Promise<NormalizedAddon[]> {
-  const out: NormalizedAddon[] = [];
+  // Keyed by uuid: an addon whose stars change mid-crawl moves across a page boundary and can come back twice, and Gatus refuses the whole config over a repeated key.
+  const out = new Map<string, NormalizedAddon>();
+  const add = (addon: NormalizedAddon) => {
+    if (!out.has(addon.uuid)) out.set(addon.uuid, addon);
+  };
   let page = 1;
   for (;;) {
     const url = `${config.apiBase}/addons?page=${page}&limit=100&sort_by=stars&order=desc`;
     const body = await getApi<ApiResponse>(url);
     for (const addon of body.addons || []) {
-      if (addon?.manifestUrl && addon?.manifest) out.push(normalizeAddon(addon));
+      if (addon?.manifestUrl && addon?.manifest) add(normalizeAddon(addon));
       const parentName = instanceParentName(addon);
       for (const inst of addon.instances || []) {
-        if (inst?.manifestUrl && inst?.manifest) out.push(normalizeAddon(inst, parentName));
+        if (inst?.manifestUrl && inst?.manifest) add(normalizeAddon(inst, parentName));
       }
     }
     if (!body.pagination?.hasNextPage) break;
@@ -21,7 +25,7 @@ export async function fetchAllAddons(): Promise<NormalizedAddon[]> {
     if (page > (body.pagination.totalPages || 0) + 2) break;
   }
 
-  return out;
+  return [...out.values()];
 }
 
 /** Group label stem for a parent's instances: manifest name up to the first "|" (e.g. "Comet | ElfHosted" -> "Comet"). */
