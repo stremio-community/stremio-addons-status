@@ -195,6 +195,11 @@ describe("buildEndpoints", () => {
     const [ep] = buildEndpoints([addon("not a url")]);
     expect(ep.hostname).toBe("");
   });
+
+  it("refuses a list that repeats a uuid, since Gatus would refuse the whole config", () => {
+    const url = "https://aio.example.org/manifest.json";
+    expect(() => buildEndpoints([addon(url), addon(url)])).toThrow(/repeats uuid/);
+  });
 });
 
 describe("buildExternalEndpoints", () => {

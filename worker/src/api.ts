@@ -3,29 +3,28 @@ import { config, USER_AGENT } from "./config.js";
 import type { NormalizedAddon } from "./types.js";
 
 export async function fetchAllAddons(): Promise<NormalizedAddon[]> {
-  // Keyed by uuid: an addon whose stars change mid-crawl moves across a page boundary and can come back twice, and Gatus refuses the whole config over a repeated key.
-  const out = new Map<string, NormalizedAddon>();
-  const add = (addon: NormalizedAddon) => {
-    if (!out.has(addon.uuid)) out.set(addon.uuid, addon);
-  };
-  let page = 1;
+  const out: NormalizedAddon[] = [];
+  const seenCursors = new Set<string>();
+  let cursor: string | null = null;
   for (;;) {
-    const url = `${config.apiBase}/addons?page=${page}&limit=100&sort_by=stars&order=desc`;
+    // Pages are edge-cached for up to a day, so each can be a snapshot from a different time; keyset order on createdAt keeps them from overlapping however stale they are.
+    let url = `${config.apiBase}/addons?limit=100&sort_by=createdAt&order=asc`;
+    if (cursor) url += `&cursor=${encodeURIComponent(cursor)}`;
     const body = await getApi<ApiResponse>(url);
     for (const addon of body.addons || []) {
-      if (addon?.manifestUrl && addon?.manifest) add(normalizeAddon(addon));
+      if (addon?.manifestUrl && addon?.manifest) out.push(normalizeAddon(addon));
       const parentName = instanceParentName(addon);
       for (const inst of addon.instances || []) {
-        if (inst?.manifestUrl && inst?.manifest) add(normalizeAddon(inst, parentName));
+        if (inst?.manifestUrl && inst?.manifest) out.push(normalizeAddon(inst, parentName));
       }
     }
     if (!body.pagination?.hasNextPage) break;
-    page = body.pagination.page + 1;
-    // Safety gate against a pagination bug looping forever.
-    if (page > (body.pagination.totalPages || 0) + 2) break;
+    cursor = body.pagination.nextCursor ?? null;
+    if (!cursor) throw new Error(`API reported a next page without a cursor for ${url}`);
+    if (seenCursors.has(cursor)) throw new Error(`API repeated cursor ${cursor} for ${url}`);
+    seenCursors.add(cursor);
   }
-
-  return [...out.values()];
+  return out;
 }
 
 /** Group label stem for a parent's instances: manifest name up to the first "|" (e.g. "Comet | ElfHosted" -> "Comet"). */
@@ -55,6 +54,8 @@ interface ApiResponse {
     totalPages: number;
     hasNextPage: boolean;
     hasPreviousPage: boolean;
+    /** Opaque keyset cursor for the page after this one; null on the last page. */
+    nextCursor: string | null;
   };
 }
 
