@@ -12,6 +12,8 @@ export interface EndpointDescriptor {
   key: string;
   /** Shown next to the group on the status page so instances of the same addon can be told apart; empty when the manifest URL won't parse. */
   hostname: string;
+  /** Shown as the Discord alert's thumbnail; empty when the manifest has none or it isn't safe to publish. */
+  logo: string;
 }
 
 /** Resolve an addon's display group: instances collapse under "Addon Instances", everything else under "Addons". */
@@ -53,6 +55,48 @@ function hostnameOf(addon: NormalizedAddon): string {
   return URL.parse(addon.manifestUrl)?.hostname ?? "";
 }
 
+/** Gatus rejects a longer logo, and the whole push with it. */
+const MAX_LOGO_LENGTH = 2048;
+
+/**
+ * The manifest's logo, only when it's an absolute http(s) URL that doesn't carry the base URL's path, where a configured addon keeps its config or API key.
+ * A base URL without a path carries no config, so logos served from an unconfigured addon's own host survive.
+ */
+function logoOf(addon: NormalizedAddon): string {
+  const logo = URL.parse(addon.logo ?? "");
+  if (logo?.protocol !== "https:" && logo?.protocol !== "http:") return "";
+  if (logo.href.length > MAX_LOGO_LENGTH) return "";
+  const base = URL.parse(addon.baseUrl);
+  if (!base || carriesPathSegment(logo.href, base.pathname)) return "";
+  return logo.href;
+}
+
+/**
+ * Whether the URL holds any segment of the path whole, as in `/<key>/logo.png` or `?token=<key>`, decoded so a different percent-encoding still matches.
+ * Whole segments only, so a `/free` base doesn't drop `/free.png`.
+ */
+function carriesPathSegment(url: string, path: string): boolean {
+  const text = decode(url);
+  return path
+    .split("/")
+    .filter(Boolean)
+    .some((segment) =>
+      new RegExp(`(^|[/?#&=])${escapeRegExp(decode(segment))}([/?#&=]|$)`).test(text),
+    );
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function decode(text: string): string {
+  try {
+    return decodeURIComponent(text);
+  } catch {
+    return text;
+  }
+}
+
 /**
  * Build one descriptor per addon.
  * Identity is the addon's stable uuid, pushed as Gatus's explicit `key` (TwiN/gatus#1146), so it survives renames and regroups; the display name is just a label and needn't be unique.
@@ -71,6 +115,7 @@ export function buildEndpoints(addons: NormalizedAddon[]): EndpointDescriptor[] 
     group: orderPrefix(groupFor(addon)),
     key: addon.uuid,
     hostname: hostnameOf(addon),
+    logo: logoOf(addon),
   }));
 }
 
@@ -203,6 +248,7 @@ export function buildConditions(r: ProbeResult, baseUrl: string): ConditionResul
 /**
  * Push a probe verdict to Gatus's external-endpoint API, retrying until Gatus has loaded the endpoint, and return the HTTP status.
  * The hostname rides along on every push because Gatus stores it per result and the card shows the latest one.
+ * The logo rides along too because Gatus doesn't store it at all: it only reaches the Discord alerts sent while handling the push that carried it.
  * The breakdown travels only as conditions: Gatus renders the `error` param as a separate block in the same tooltip and Discord alerts format the conditions themselves, so sending the message too would just duplicate it in both places.
  */
 export async function pushResult(endpoint: EndpointDescriptor, r: ProbeResult): Promise<number> {
@@ -211,6 +257,7 @@ export async function pushResult(endpoint: EndpointDescriptor, r: ProbeResult): 
     duration: `${r.durationMs}ms`,
   });
   if (endpoint.hostname) params.set("hostname", endpoint.hostname);
+  if (endpoint.logo) params.set("logo", endpoint.logo);
   const url = `${config.gatusUrl}/api/v1/endpoints/${endpoint.key}/external?${params.toString()}`;
   const body = JSON.stringify({ conditionResults: buildConditions(r, endpoint.addon.baseUrl) });
   const post = () =>

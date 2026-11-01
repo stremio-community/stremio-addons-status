@@ -172,7 +172,7 @@ describe("buildConditions", () => {
   });
 });
 
-function addon(manifestUrl: string): NormalizedAddon {
+function addon(manifestUrl: string, logo?: string): NormalizedAddon {
   return {
     uuid: "0b6c1a2e-0000-4000-8000-000000000000",
     slug: "aiostreams",
@@ -182,6 +182,7 @@ function addon(manifestUrl: string): NormalizedAddon {
     stars: 0,
     categories: [],
     instanceOf: "AIOStreams",
+    ...(logo ? { logo } : {}),
   };
 }
 
@@ -194,6 +195,46 @@ describe("buildEndpoints", () => {
   it("leaves the hostname empty when the manifest URL won't parse", () => {
     const [ep] = buildEndpoints([addon("not a url")]);
     expect(ep.hostname).toBe("");
+  });
+
+  it("keeps a logo from an unconfigured addon's own host or a third party", () => {
+    const logos = ["https://aio.example.org/images/logo.png", "https://i.imgur.com/logo.png"].map(
+      (logo) => buildEndpoints([addon("https://aio.example.org/manifest.json", logo)])[0].logo,
+    );
+    expect(logos).toEqual([
+      "https://aio.example.org/images/logo.png",
+      "https://i.imgur.com/logo.png",
+    ]);
+  });
+
+  it("drops a logo carrying the configured path, however it's spelled", () => {
+    const logos = [
+      "https://aio.example.org/u/secret-api-key/logo.png",
+      "http://AIO.example.org/u/secret-api-key/logo.png",
+      "https://cdn.example.org/logo.png?token=secret-api-key",
+      "https://aio.example.org/u/secret%2Dapi%2Dkey/logo.png",
+    ].map(
+      (logo) =>
+        buildEndpoints([addon("https://aio.example.org/u/secret-api-key/manifest.json", logo)])[0]
+          .logo,
+    );
+    expect(logos).toEqual(["", "", "", ""]);
+  });
+
+  it("keeps a logo that only resembles a segment of the base path", () => {
+    const [ep] = buildEndpoints([
+      addon("https://free.example.org/free/manifest.json", "https://free.example.org/free.png"),
+    ]);
+    expect(ep.logo).toBe("https://free.example.org/free.png");
+  });
+
+  it("drops a logo Gatus would reject along with the whole push", () => {
+    const logos = [
+      "data:image/png;base64,AAAA",
+      "/logo.png",
+      `https://i.imgur.com/${"a".repeat(2048)}.png`,
+    ].map((logo) => buildEndpoints([addon("https://aio.example.org/manifest.json", logo)])[0].logo);
+    expect(logos).toEqual(["", "", ""]);
   });
 
   it("refuses a list that repeats a uuid, since Gatus would refuse the whole config", () => {
@@ -267,6 +308,17 @@ describe("pushResult", () => {
     const fetch = stubFetch(401);
     expect(await push()).toEqual({ status: "fulfilled", value: 401 });
     expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends the hostname and logo along with the verdict", async () => {
+    const fetch = stubFetch(200);
+    const [withLogo] = buildEndpoints([
+      addon("https://aio.example.org/manifest.json", "https://i.imgur.com/logo.png"),
+    ]);
+    await pushResult(withLogo, result);
+    const params = new URL(fetch.mock.calls[0][0] as string).searchParams;
+    expect(params.get("hostname")).toBe("aio.example.org");
+    expect(params.get("logo")).toBe("https://i.imgur.com/logo.png");
   });
 
   it("doesn't retry a timed-out push, which may have been stored", async () => {
