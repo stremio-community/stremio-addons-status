@@ -3,6 +3,7 @@ import { dirname } from "node:path";
 import { stringify } from "yaml";
 import { config, USER_AGENT } from "./config.js";
 import type { DetailRow, NormalizedAddon, ProbeResult } from "./types.js";
+import { sleep } from "./utils.js";
 
 export interface EndpointDescriptor {
   addon: NormalizedAddon;
@@ -200,7 +201,7 @@ export function buildConditions(r: ProbeResult, baseUrl: string): ConditionResul
 }
 
 /**
- * Push a probe verdict to Gatus's external-endpoint API and return the HTTP status.
+ * Push a probe verdict to Gatus's external-endpoint API, retrying until Gatus has loaded the endpoint, and return the HTTP status.
  * The hostname rides along on every push because Gatus stores it per result and the card shows the latest one.
  * The breakdown travels only as conditions: Gatus renders the `error` param as a separate block in the same tooltip and Discord alerts format the conditions themselves, so sending the message too would just duplicate it in both places.
  */
@@ -211,15 +212,39 @@ export async function pushResult(endpoint: EndpointDescriptor, r: ProbeResult): 
   });
   if (endpoint.hostname) params.set("hostname", endpoint.hostname);
   const url = `${config.gatusUrl}/api/v1/endpoints/${endpoint.key}/external?${params.toString()}`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "User-Agent": USER_AGENT,
-      Authorization: `Bearer ${config.pushToken}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ conditionResults: buildConditions(r, endpoint.addon.baseUrl) }),
-    signal: AbortSignal.timeout(15_000),
-  });
-  return res.status;
+  const body = JSON.stringify({ conditionResults: buildConditions(r, endpoint.addon.baseUrl) });
+  const post = () =>
+    fetch(url, {
+      method: "POST",
+      headers: {
+        "User-Agent": USER_AGENT,
+        Authorization: `Bearer ${config.pushToken}`,
+        "Content-Type": "application/json",
+      },
+      body,
+      signal: AbortSignal.timeout(15_000),
+    });
+
+  for (const delay of PUSH_RETRY_DELAYS_MS) {
+    try {
+      const res = await post();
+      if (res.status !== 404) return res.status;
+    } catch (e) {
+      if (isTimeout(e)) throw e;
+    }
+    await sleep(delay);
+  }
+  return (await post()).status;
+}
+
+/**
+ * Gatus picks up a rewritten config only on its 30-second poll, then stops its HTTP server while it reloads.
+ * Until then it answers 404 for an endpoint the worker just wrote, and during the reload the connection fails, so the delays span both before giving up.
+ * The worker only pushes keys it wrote, so a 404 always means Gatus hasn't caught up yet.
+ */
+const PUSH_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 15_000, 30_000];
+
+/** A timed-out push may still have been stored, so retrying it could record the verdict twice. */
+function isTimeout(e: unknown): boolean {
+  return e instanceof DOMException && e.name === "TimeoutError";
 }

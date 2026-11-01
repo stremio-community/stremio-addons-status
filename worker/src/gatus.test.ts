@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import { buildConditions, buildEndpoints, buildExternalEndpoints } from "./gatus.js";
+import { afterEach, describe, it, expect, vi } from "vitest";
+import { buildConditions, buildEndpoints, buildExternalEndpoints, pushResult } from "./gatus.js";
 import type { NormalizedAddon, ProbeResult } from "./types.js";
 
 function verdict(detail: Omit<ProbeResult["detail"], "manifestDetails">): ProbeResult {
@@ -222,5 +222,56 @@ describe("buildExternalEndpoints", () => {
       false,
     );
     expect(entry.alerts).toBeUndefined();
+  });
+});
+
+describe("pushResult", () => {
+  const [endpoint] = buildEndpoints([addon("https://aio.example.org/manifest.json")]);
+  const result = verdict({ live: true, mode: "content", perResource: [] });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  function stubFetch(...responses: Array<number | Error>) {
+    const fetch = vi.fn();
+    for (const r of responses) {
+      if (r instanceof Error) fetch.mockRejectedValueOnce(r);
+      else fetch.mockResolvedValueOnce(new Response(null, { status: r }));
+    }
+    vi.stubGlobal("fetch", fetch);
+    return fetch;
+  }
+
+  async function push(): Promise<PromiseSettledResult<number>> {
+    vi.useFakeTimers();
+    const pushed = Promise.allSettled([pushResult(endpoint, result)]);
+    await vi.runAllTimersAsync();
+    return (await pushed)[0];
+  }
+
+  it("retries until Gatus has loaded the endpoint and is listening again", async () => {
+    const fetch = stubFetch(404, 404, new TypeError("fetch failed"), 200);
+    expect(await push()).toEqual({ status: "fulfilled", value: 200 });
+    expect(fetch).toHaveBeenCalledTimes(4);
+  });
+
+  it("gives up with the last status once Gatus never loads the endpoint", async () => {
+    const fetch = stubFetch(...Array<number>(7).fill(404));
+    expect(await push()).toEqual({ status: "fulfilled", value: 404 });
+    expect(fetch).toHaveBeenCalledTimes(7);
+  });
+
+  it("returns other errors without retrying", async () => {
+    const fetch = stubFetch(401);
+    expect(await push()).toEqual({ status: "fulfilled", value: 401 });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("doesn't retry a timed-out push, which may have been stored", async () => {
+    const fetch = stubFetch(new DOMException("timed out", "TimeoutError"));
+    expect(await push()).toMatchObject({ status: "rejected", reason: { name: "TimeoutError" } });
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 });
