@@ -4,8 +4,10 @@ kind: Deployment
 metadata:
   name: stremio-addons-status
 spec:
-  # A second replica would run the static checks and probe every addon twice, and send every Discord alert twice.
+  # A second pod would run the static checks and probe every addon twice, and send every Discord alert twice, so a rollout also stops the old pod before starting the new one.
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: stremio-addons-status
