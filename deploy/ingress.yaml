@@ -1,0 +1,18 @@
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: stremio-addons-status
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: status.stremio-addons.net
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: stremio-addons-status
+                port:
+                  name: http

@@ -1,0 +1,23 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - secret.sops.yaml
+  - deployment.yaml
+  - service.yaml
+  - ingress.yaml
+# Compose mounts the same file, so local and production status pages share one base configuration.
+# It's outside this folder, which Flux allows; plain kustomize needs --load-restrictor LoadRestrictionsNone.
+configMapGenerator:
+  - name: gatus-config
+    files:
+      - ../gatus/config.d/00-base.yaml
+# Every container whose image is `gatus` or `worker` runs these images.
+images:
+  # Pinned by hand at the tag compose.yaml uses: upgrade both together.
+  - name: gatus
+    newName: ghcr.io/stremio-community/gatus
+    newTag: sha-fa8f9be
+  # Flux commits each new tag to the marked line.
+  - name: worker
+    newName: ghcr.io/stremio-community/stremio-addons-status
+    newTag: main-1793497481-3e34325 # {"$imagepolicy": "flux-system:stremio-addons-status:tag"}

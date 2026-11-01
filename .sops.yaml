@@ -1,0 +1,7 @@
+---
+# Encrypts the deploy/ folder's secrets to the k8s-self-managed cluster's age key, which Flux decrypts them with.
+# Only the values are encrypted, so Flux and kubeconform can still read each Secret's kind and name.
+creation_rules:
+  - path_regex: (^|/)deploy/.+\.sops\.yaml$
+    encrypted_regex: ^(data|stringData)$
+    age: age1lqw3wrlnd597umyg9pxmjvakfg76struw45gmhm89uevegc06ayq48vcwl
