@@ -10,6 +10,8 @@ export interface NormalizedAddon {
   stars: number;
   /** Category names from the API, first is primary. */
   categories: string[];
+  /** The manifest's logo as advertised, unchecked: it may sit under the base URL and carry its config. */
+  logo?: string;
   /** When set, this addon is an instance of the named parent; it groups under "Addon Instances" instead of "Addons". */
   instanceOf?: string;
 }

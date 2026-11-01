@@ -77,6 +77,7 @@ function normalizeAddon(apiAddon: ApiAddon, instanceOf?: string): NormalizedAddo
     baseUrl: getBaseUrl(apiAddon.manifestUrl),
     stars: apiAddon.stars ?? 0,
     categories: (apiAddon.categories || []).map((c) => c.name).filter(Boolean),
+    ...(apiAddon.manifest?.logo ? { logo: apiAddon.manifest.logo } : {}),
     ...(instanceOf ? { instanceOf } : {}),
   };
 }
