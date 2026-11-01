@@ -31,5 +31,6 @@ The point of the worker is to avoid false DOWNs. Preserve these when editing `pr
 
 - Conventional commits without scopes: `feat: ...`, not `feat(worker): ...`.
 - Log through pino (`logger.ts`).
+- `gatus/config.d/00-base.yaml` is shared by Compose and production, so environment-specific values such as the Postgres host and SSL mode (`POSTGRES_HOST`, `POSTGRES_SSLMODE`) come from Gatus's environment, never hardcoded.
 - stremio-addons.net API docs: https://docs.stremio-addons.net/developers/api
 - When a change alters anything above, update this file in the same change.
