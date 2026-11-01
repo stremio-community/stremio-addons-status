@@ -28,7 +28,7 @@ docker compose up -d
 - **Status page**: http://localhost:8080. Addons are grouped by category; open one to see its uptime history.
 - **Badge**: `.../api/v1/endpoints/{key}/uptimes/7d/badge.svg`
 
-Point `DISCORD_WEBHOOK_URL` at a channel in your Discord server to receive down and recovery alerts. See `.env.example` for the full configuration details.
+Point `DISCORD_WEBHOOK_URL` at a channel in your Discord server to receive down and recovery alerts. `POSTGRES_HOST` and `POSTGRES_SSLMODE` tell Gatus where its Postgres runs; they default to the Compose container without TLS. See `.env.example` for the full configuration details.
 
 ## Development
 
