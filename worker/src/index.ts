@@ -4,7 +4,7 @@ import { buildEndpoints, writeConfig, pushResult, type EndpointDescriptor } from
 import { probe } from "./probe.js";
 import { resetCycle } from "./idsources.js";
 import { mapLimit } from "./concurrency.js";
-import { errMsg, sleep } from "./utils.js";
+import { errMsg, nextSlotAfter, sleep } from "./utils.js";
 import { logger } from "./logger.js";
 import type { ProbeResult } from "./types.js";
 
@@ -86,14 +86,16 @@ async function runCycle(): Promise<void> {
 }
 
 async function probeLoop(): Promise<void> {
+  let slot = nextSlotAfter(Date.now(), config.probeInterval);
   for (;;) {
-    const started = Date.now();
+    await sleep(Math.max(0, slot - Date.now()));
     try {
       await runCycle();
     } catch (e) {
       logger.error({ err: errMsg(e) }, "cycle error");
     }
-    await sleep(Math.max(0, config.probeInterval - (Date.now() - started)));
+    // From the slot, not the clock, so a timer firing a millisecond early can't run the same slot twice; a cycle that overran skips the slots it missed.
+    slot = nextSlotAfter(Math.max(Date.now(), slot), config.probeInterval);
   }
 }
 
