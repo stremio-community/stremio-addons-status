@@ -8,7 +8,7 @@ export async function fetchAllAddons(): Promise<NormalizedAddon[]> {
   let cursor: string | null = null;
   for (;;) {
     // Pages are edge-cached for up to a day, so each can be a snapshot from a different time; keyset order on createdAt keeps them from overlapping however stale they are.
-    let url = `${config.apiBase}/addons?limit=100&sort_by=createdAt&order=asc`;
+    let url = `${config.apiBase}/addons?sort_by=createdAt&order=asc&limit=100`;
     if (cursor) url += `&cursor=${encodeURIComponent(cursor)}`;
     const body = await getApi<ApiResponse>(url);
     for (const addon of body.addons || []) {
