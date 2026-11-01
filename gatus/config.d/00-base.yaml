@@ -29,6 +29,8 @@ alerting:
   discord:
     webhook-url: "${DISCORD_WEBHOOK_URL}"
     title: ":satellite: Stremio Addons Status"
+    components-v2: true
+    status-page-url: "https://status.stremio-addons.net"
 
 endpoints:
   - name: stremio-addons.net
