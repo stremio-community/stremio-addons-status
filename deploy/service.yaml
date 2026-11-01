@@ -1,0 +1,13 @@
+---
+# stremio-addons-hub reads Gatus's API through this name, as http://stremio-addons-status.stremio-addons-status.svc.cluster.local.
+apiVersion: v1
+kind: Service
+metadata:
+  name: stremio-addons-status
+spec:
+  selector:
+    app.kubernetes.io/name: stremio-addons-status
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

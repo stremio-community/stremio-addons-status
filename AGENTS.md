@@ -14,6 +14,7 @@ The running Gatus only reflects `../gatus` edits when built from it via `compose
 
 - Endpoint keys are the addon `uuid`. Gatus stores history in Postgres under that key, so changing the key source orphans all history: a one-time cutover, not a refactor.
 - `stremio-addons-hub` (`uptime.ts`) queries Gatus by that uuid for uptime stats, so treat the key as an API.
+  In production it does so through the Service `stremio-addons-status` on port 80 (`deploy/service.yaml`), so keep that name and port.
 - Condition strings from `buildConditions` show in the status page tooltip and in Discord alerts, so keep them terse; the request-level detail belongs in their detail rows, which only the fork's details dialog renders.
 - Everything pushed to Gatus is public, and a configured addon's base URL can carry its config or API key: never push it, only paths relative to it (`buildConditions` strips it as a backstop).
 - Group order is encoded as leading spaces on group names (`GROUP_ORDER` in `gatus.ts`); the static groups in `gatus/config.d/00-base.yaml` hardcode matching counts.
@@ -26,6 +27,16 @@ The point of the worker is to avoid false DOWNs. Preserve these when editing `pr
 - Only the primary resource (`stream` > `catalog` > `meta`) decides UP/DOWN; secondary resources only annotate.
 - An addon is unreachable only when both the WARP proxy and the direct route fail.
 - A missing test ID (e.g. an external ID-source outage) degrades to liveness-only or an annotation, never to DOWN.
+
+## Production
+
+- Runs on the `sleeyax/k8s-self-managed` cluster from `deploy/`, which Flux applies on every push to `main`; the cluster repo registers the app, its namespace and its Postgres role and database.
+- One `replicas: 1` pod runs Gatus and the worker; never add a replica, which would double every probe and Discord alert.
+- Flux owns the worker's tag line in `deploy/kustomization.yaml` (the `$imagepolicy` marker): it commits each new image's tag to `main`. Never write `[skip ci]` in a commit message of your own.
+- The Gatus fork's image is pinned in both `compose.yaml` and `deploy/kustomization.yaml`; change them together.
+- The cluster's ConfigMap is generated from `gatus/config.d/00-base.yaml`, outside `deploy/`. Render with `kubectl kustomize --load-restrictor LoadRestrictionsNone deploy`, which matches Flux.
+- Secrets live only in `deploy/secret.sops.yaml`, encrypted to the cluster key per `.sops.yaml`; never commit a plaintext secret or a real Discord webhook.
+- Containers run as UID 1000 with a read-only root filesystem: anything that writes files needs a volume, like the shared `/config` emptyDir.
 
 ## Conventions
 

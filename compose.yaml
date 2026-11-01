@@ -39,6 +39,7 @@ services:
   gatus:
     # TODO: change back to upstream image once https://github.com/TwiN/gatus/pull/1727 is merged.
     # image: ghcr.io/twin/gatus:stable
+    # Production pins the same tag in deploy/kustomization.yaml; change both together.
     image: ghcr.io/stremio-community/gatus:sha-fa8f9be
     restart: no
     depends_on:

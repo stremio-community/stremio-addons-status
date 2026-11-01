@@ -30,6 +30,23 @@ docker compose up -d
 
 Point `DISCORD_WEBHOOK_URL` at a channel in your Discord server to receive down and recovery alerts. `POSTGRES_HOST` and `POSTGRES_SSLMODE` tell Gatus where its Postgres runs; they default to the Compose container without TLS. See `.env.example` for the full configuration details.
 
+## Deployment
+
+https://status.stremio-addons.net runs on the [k8s-self-managed](https://github.com/sleeyax/k8s-self-managed) Kubernetes cluster, from the `deploy` folder: one pod with Gatus and the worker side by side, the worker reaching Gatus on localhost.
+
+- **Releasing**: merging to `main` is releasing. CI builds the worker image to `ghcr.io/stremio-community/stremio-addons-status`, then Flux commits its tag to `deploy/kustomization.yaml` on `main` and rolls it out. Pull before you push, since Flux's commits land in between, and never write `[skip ci]` in a commit message of your own: GitHub skips the build of a push whose last commit holds it.
+- **Gatus**: the fork's image is pinned by hand in `deploy/kustomization.yaml`, at the same tag as `compose.yaml`; upgrade both together.
+- **Configuration**: the cluster mounts `gatus/config.d/00-base.yaml` from a ConfigMap generated from that same file, so a change to it rolls the pod. The worker writes its endpoints next to it on every start, as in Compose.
+- **Storage**: history lives in the `stremio_addons_status` database on the cluster's shared Postgres, reached over TLS.
+- **WARP**: the worker and Gatus's static checks go through the cluster's shared WARP proxy, `socks5://warp.warp.svc.cluster.local:1080`.
+- **Secrets**: `deploy/secret.sops.yaml` holds `PUSH_TOKEN`, `DISCORD_WEBHOOK_URL` and the Postgres settings, encrypted to the cluster's key with [sops](https://github.com/getsops/sops) per `.sops.yaml`. Edit it with `sops deploy/secret.sops.yaml` from the repo root; without the cluster key you can add or replace a value, but not read the others.
+
+To render the deploy folder the way Flux does, which reads the base configuration from outside it:
+
+```sh
+kubectl kustomize --load-restrictor LoadRestrictionsNone deploy
+```
+
 ## Development
 
 Requirements: Node.js (version in `.nvmrc`), pnpm and Docker.

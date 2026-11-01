@@ -1,0 +1,117 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stremio-addons-status
+spec:
+  # A second replica would run the static checks and probe every addon twice, and send every Discord alert twice.
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: stremio-addons-status
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: stremio-addons-status
+    spec:
+      automountServiceAccountToken: false
+      # The worker image's node user; the Gatus image has no user of its own and runs as any.
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: gatus
+          # Set in kustomization.yaml.
+          image: gatus
+          envFrom:
+            - secretRef:
+                name: stremio-addons-status
+          env:
+            - name: GATUS_CONFIG_PATH
+              value: /config
+            # For the static checks in 00-base.yaml.
+            - name: PROXY_URL
+              value: socks5://warp.warp.svc.cluster.local:1080
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+          # Keeps serving while the nodes stop sending it requests.
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 5
+          volumeMounts:
+            - name: config
+              mountPath: /config
+            # A single file: a whole ConfigMap mount also holds a hidden timestamped copy, which Gatus would load as well.
+            - name: base-config
+              mountPath: /config/00-base.yaml
+              subPath: 00-base.yaml
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+        - name: worker
+          # Set in kustomization.yaml.
+          image: worker
+          env:
+            - name: GATUS_URL
+              value: http://localhost:8080
+            # Gatus reloads the config directory when the worker rewrites this file.
+            - name: ENDPOINTS_CONFIG_PATH
+              value: /config/10-endpoints.yaml
+            - name: PROXY_URL
+              value: socks5://warp.warp.svc.cluster.local:1080
+            - name: API_BASE
+              value: https://stremio-addons.net/api/v0
+            - name: PROBE_INTERVAL
+              value: 5m
+            - name: LIST_REFRESH
+              value: 1h
+            - name: CONCURRENCY
+              value: "8"
+            - name: PUSH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: stremio-addons-status
+                  key: PUSH_TOKEN
+            - name: DISCORD_WEBHOOK_URL
+              valueFrom:
+                secretKeyRef:
+                  name: stremio-addons-status
+                  key: DISCORD_WEBHOOK_URL
+          volumeMounts:
+            - name: config
+              mountPath: /config
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+      volumes:
+        # Rebuilt on every start: the worker writes its endpoints here, and Gatus reads them with the base configuration.
+        - name: config
+          emptyDir: {}
+        - name: base-config
+          configMap:
+            name: gatus-config
