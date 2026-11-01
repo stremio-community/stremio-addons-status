@@ -58,6 +58,12 @@ function hostnameOf(addon: NormalizedAddon): string {
  * The uuid is globally unique and contains only [0-9a-f-] (none of which sanitize rewrites), so sanitize(uuid) is injective -- no disambiguation needed.
  */
 export function buildEndpoints(addons: NormalizedAddon[]): EndpointDescriptor[] {
+  // Gatus refuses the whole config over a repeated key, so fail the refresh and keep serving the previous one.
+  const seen = new Set<string>();
+  for (const { uuid } of addons) {
+    if (seen.has(uuid)) throw new Error(`addon list repeats uuid ${uuid}`);
+    seen.add(uuid);
+  }
   return addons.map((addon) => ({
     addon,
     name: baseName(addon),
