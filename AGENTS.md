@@ -15,7 +15,8 @@ The running Gatus only reflects `../gatus` edits when built from it via `compose
 - Endpoint keys are the addon `uuid`. Gatus stores history in Postgres under that key, so changing the key source orphans all history: a one-time cutover, not a refactor.
 - `stremio-addons-hub` (`uptime.ts`) queries Gatus by that uuid for uptime stats, so treat the key as an API.
   In production it does so through the Service `stremio-addons-status` on port 80 (`deploy/service.yaml`), so keep that name and port.
-- Condition strings from `buildConditions` show in the status page tooltip and in Discord alerts, so keep them terse; the request-level detail belongs in their detail rows, which only the fork's details dialog renders.
+- Condition strings from `buildConditions` show in the status page tooltip and in Discord alerts, so keep them terse; the request-level detail belongs in their detail rows, which the fork's details dialog renders.
+  Discord alerts also show the rows whose label is in `detail-labels` (`gatus/config.d/00-base.yaml`), so renaming one of those labels in `probe.ts` silently drops it from alerts.
 - Everything pushed to Gatus is public, and a configured addon's base URL can carry its config or API key: never push it, only paths relative to it (`buildConditions` strips it as a backstop).
   The manifest logo, pushed for the Discord alert thumbnail, is dropped whenever it holds any segment of the base URL's path (`logoOf`).
 - Group order is encoded as leading spaces on group names (`GROUP_ORDER` in `gatus.ts`); the static groups in `gatus/config.d/00-base.yaml` hardcode matching counts.
