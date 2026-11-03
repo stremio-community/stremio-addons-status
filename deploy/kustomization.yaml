@@ -16,7 +16,7 @@ images:
   # Pinned by hand at the tag compose.yaml uses: upgrade both together.
   - name: gatus
     newName: ghcr.io/stremio-community/gatus
-    newTag: sha-be894b4
+    newTag: sha-30bb693
   # Flux commits each new tag to the marked line.
   - name: worker
     newName: ghcr.io/stremio-community/stremio-addons-status

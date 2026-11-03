@@ -31,6 +31,10 @@ alerting:
     title: ":satellite: Stremio Addons Status"
     components-v2: true
     status-page-url: "https://status.stremio-addons.net"
+    # Mark the DOWN message as recovered instead of posting a new one, so the channel only gets messages when something breaks.
+    edit-on-resolved: true
+    # Labels of the worker's detail rows (probe.ts) to show under a failed condition.
+    detail-labels: ["Reason", "Test ID", "Attempt"]
 
 endpoints:
   - name: stremio-addons.net
