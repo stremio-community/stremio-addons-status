@@ -107,6 +107,10 @@ export const OVERRIDES: Readonly<Record<string, AddonOverride>> = {
       { type: "series", id: "tt0088509" },
     ],
   },
+  "6eec9b00-3cbd-46b1-a4b7-31d8005e4f58": {
+    name: "Sublatino - dAV1ron",
+    needsConfig: "translates with the user's own DeepL, Gemini or OpenAI key",
+  },
   "b8fd7678-96a1-4b74-92c2-d1bbc290cc61": {
     name: "SubMaker | ElfHosted",
     translatesSubtitles: "it translates subtitles with the AI key in its config",

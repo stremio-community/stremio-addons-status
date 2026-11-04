@@ -666,6 +666,8 @@ interface TitleCheck {
   answeredInMs?: number;
   unanswered: boolean;
   timedOut: boolean;
+  /** Listed, but its file is generated on request, so it wasn't fetched. */
+  unfetched?: boolean;
 }
 
 async function fetchListing(
@@ -721,7 +723,7 @@ async function checkTitle(
   const entry = best.real.find((e) => mayFetch(e, base, onDemand));
   if (!entry) {
     check.details.push({ label: "Note", value: "file not checked: generated on request" });
-    return check;
+    return { ...check, unfetched: true };
   }
   const { verdict, row } = await sampleFile(entry, URL.parse(base)?.hostname);
   check.details.push(row);
@@ -768,7 +770,8 @@ export async function checkSubtitles(
       `subtitles check ${check.outcome}: ${t.type} ${check.summary}`,
     );
     const aboutAddon = check.outcome === "notices" && check.notice?.placeholder !== "no-content";
-    if (check.outcome === "passed" || aboutAddon) break;
+    // A title whose file wasn't fetched leaves room for another whose file says it is ready.
+    if ((check.outcome === "passed" && !check.unfetched) || aboutAddon) break;
     if (titles.filter((c) => c.unanswered).length >= MAX_UNANSWERED) break;
   }
   if (titles.length === 0) return undefined;
@@ -806,8 +809,13 @@ export async function checkSubtitles(
   };
 }
 
+/** A ready file of an addon that generates its subtitles outweighs listings whose files weren't fetched: it is the only output of the addon that was checked. */
 function subtitlesVerdict(titles: TitleCheck[]): SubtitlesVerdict {
-  if (titles.some((c) => c.outcome === "passed")) return { kind: "content" };
+  const passed = titles.filter((c) => c.outcome === "passed");
+  if (passed.some((c) => !c.unfetched)) return { kind: "content" };
+  if (passed.length > 0) {
+    return titles.some((c) => c.outcome === "bad-file") ? { kind: "down" } : { kind: "content" };
+  }
   const notice = strongestPlaceholder(titles.flatMap((c) => c.notice ?? []));
   if (notice?.placeholder === "error") return { kind: "down" };
   if (notice?.placeholder === "needs-config") return { kind: "needs-config", reason: notice.label };

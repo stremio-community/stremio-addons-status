@@ -546,6 +546,46 @@ describe("checkSubtitles", () => {
     expect(h.sampled).toEqual([plain.url]);
   });
 
+  it("goes on to a ready file after an unfetched one, and goes down when that file is in the wrong language (idk subs)", async () => {
+    const pending = {
+      id: "heb-ai-0",
+      lang: "heb",
+      label: "AI Hebrew Translation",
+      url: "https://idk.test/ai/subtitle/x.srt",
+    };
+    const ready = {
+      ...pending,
+      label: "AI Hebrew Translation (ready)",
+      url: "https://idk.test/ai/s.srt",
+    };
+    h.listings.set(INCEPTION_EXTRA, subs([pending]));
+    h.listings.set(
+      "/subtitles/movie/tt0468569/filename=The.Dark.Knight.2008.1080p.WEB-DL.mkv.json",
+      subs([ready]),
+    );
+    h.files.set(ready.url, file(IDK_SUBS_INCEPTION));
+    const c = await checkSubtitles(BASE, [INCEPTION, DARK_KNIGHT], { ...options, onDemand: true });
+    expect(h.sampled).toEqual([ready.url]);
+    expect(c?.verdict).toEqual({ kind: "down" });
+  });
+
+  it("passes on unfetched listings when no title has a ready file", async () => {
+    const pending = {
+      id: "heb-ai-0",
+      lang: "heb",
+      label: "AI Hebrew Translation",
+      url: "https://idk.test/ai/x.srt",
+    };
+    h.listings.set(INCEPTION_EXTRA, subs([pending]));
+    h.listings.set(
+      "/subtitles/movie/tt0468569/filename=The.Dark.Knight.2008.1080p.WEB-DL.mkv.json",
+      subs([pending]),
+    );
+    const c = await checkSubtitles(BASE, [INCEPTION, DARK_KNIGHT], options);
+    expect(h.sampled).toEqual([]);
+    expect(c?.verdict).toEqual({ kind: "content" });
+  });
+
   it("fetches only ready files from an addon that translates on request", async () => {
     const plain = { id: "os-1", lang: "eng", url: "https://subs.test/1.srt" };
     h.listings.set(INCEPTION_EXTRA, subs([plain]));
