@@ -183,6 +183,14 @@ describe("unconfiguredReason", () => {
     expect(await unconfiguredReason(plain, [forbidden], manifestOverWarp, BASE)).toBeUndefined();
   });
 
+  it("doesn't take missing routes on a listed URL that already carries a config (Cinemeta of Audiobooks)", async () => {
+    configurePage = CONFIGURE_PAGE;
+    const configured = `${BASE}/%7B%22hide_explicit%22%3Atrue%7D`;
+    expect(
+      await unconfiguredReason(configurable, [expressCannotGet], manifestOverWarp, configured),
+    ).toBeUndefined();
+  });
+
   it("needs a configure page on the addon's own host (Easynews while its backend timed out)", async () => {
     configurePage = { ...CONFIGURE_PAGE, status: 504, attempts: [attempt("WARP", 504)] };
     expect(

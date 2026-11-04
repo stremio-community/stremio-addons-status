@@ -56,6 +56,11 @@ export async function servesConfigurePage(baseUrl: string): Promise<boolean> {
   }
 }
 
+/** A listed URL with a path is already an install, configured or mounted, so its missing routes aren't explained by a missing config. */
+function hasPath(baseUrl: string): boolean {
+  return (URL.parse(baseUrl)?.pathname ?? "/").split("/").some(Boolean);
+}
+
 /**
  * Why an addon whose primary content failed most likely only needs configuring, or undefined when its failure suggests no such thing.
  * The listing often carries the bare URL of an addon whose content routes exist only under the config path its configure page generates.
@@ -68,7 +73,7 @@ export async function unconfiguredReason(
   manifestAttempts: readonly Attempt[],
   baseUrl: string,
 ): Promise<string | undefined> {
-  if (answers.length === 0) return undefined;
+  if (answers.length === 0 || hasPath(baseUrl)) return undefined;
   const statuses = answers.map((a) => missingRouteStatus(a, manifestAttempts));
   if (statuses.some((s) => s === undefined)) return undefined;
   if (!invitesConfiguration(manifest) && statuses.some((s) => s !== 404)) return undefined;
