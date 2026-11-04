@@ -47,10 +47,10 @@ const PLACEHOLDER_PATTERNS: ReadonlyArray<readonly [PlaceholderKind, RegExp]> = 
         String.raw`\bno longer (available|supported|maintained|working)`,
         String.raw`\breinstall`,
         String.raw`\bnew addon link\b`,
-        String.raw`\b(subscription|token|key|session|trial|manifest|license|account)s? (has )?(expired|ended)\b`,
+        String.raw`\b(token|key|session|manifest|license|account)s? (has )?(expired|ended)\b`,
         String.raw`\bunauthori[sz]ed\b|\bnot authori[sz]ed\b|\bno autorizad|\bnão autorizad`,
         String.raw`\baccess denied\b|\bacces(so)? (blocat|denegado|negado)\b`,
-        String.raw`\bdisabled\b`,
+        String.raw`\b(addon|service|account|access|instance) (is |has been )?disabled\b`,
         String.raw`\brequest failed\b|\bauth(entication)? error\b`,
         String.raw`\brate[ -]?limit`,
         String.raw`\btoo many requests\b`,
@@ -72,7 +72,9 @@ const PLACEHOLDER_PATTERNS: ReadonlyArray<readonly [PlaceholderKind, RegExp]> = 
         String.raw`\bnot (set ?up|configured)`,
         String.raw`\binvalid (api|key|token|credentials|session|config)`,
         String.raw`\b(unlock|subscribe to watch|free trial|go premium|premium access)\b`,
+        String.raw`\b(subscription|trial)s? (has )?(expired|ended)\b`,
         String.raw`\bmediaflow\b`,
+        String.raw`\b(torrent|p2p|non-debrid) (\S+ ){0,2}disabled\b`,
         String.raw`\bactivar\b|\baktivál|\bativar\b`,
         String.raw`\brichiest[ao]\b|\bwymagan`,
       ].join("|"),
@@ -106,51 +108,87 @@ export function placeholderKind(text: string): PlaceholderKind | undefined {
   return PLACEHOLDER_PATTERNS.find(([, re]) => re.test(text))?.[0];
 }
 
-/** Catalog and meta IDs that name a notice rather than a title, split on the usual separators. */
-const PLACEHOLDER_ID_TOKENS = new Set([
-  "notice",
-  "error",
-  "setup",
-  "config",
-  "configure",
-  "promo",
-  "expired",
-  "donate",
-  "unlock",
-  "apikey",
-  "nokey",
-  "renew",
-  "alert",
-  "suspended",
-  "auth",
+/** Catalog and meta IDs that name a notice rather than a title, split on the usual separators, with what the notice stands for. */
+const PLACEHOLDER_ID_TOKENS = new Map<string, PlaceholderKind>([
+  ["notice", "needs-config"],
+  ["error", "needs-config"],
+  ["setup", "needs-config"],
+  ["config", "needs-config"],
+  ["configure", "needs-config"],
+  ["promo", "no-content"],
+  ["placeholder", "no-content"],
+  ["donate", "no-content"],
+  ["unlock", "needs-config"],
+  ["apikey", "needs-config"],
+  ["nokey", "needs-config"],
+  ["renew", "needs-config"],
+  ["alert", "needs-config"],
+  ["auth", "needs-config"],
+  ["expired", "error"],
+  ["suspended", "error"],
 ]);
 
-function hasPlaceholderIdToken(id: string): boolean {
-  return id
+const PLACEHOLDER_RANK: Record<PlaceholderKind, number> = {
+  error: 2,
+  "needs-config": 1,
+  "no-content": 0,
+};
+
+/** The placeholder that says the most about the addon: one saying it is broken outranks a plea to configure, which outranks noise. */
+export function strongestPlaceholder<T extends { placeholder: PlaceholderKind }>(
+  items: readonly T[],
+): T | undefined {
+  return items.reduce<T | undefined>(
+    (best, item) =>
+      !best || PLACEHOLDER_RANK[item.placeholder] > PLACEHOLDER_RANK[best.placeholder]
+        ? item
+        : best,
+    undefined,
+  );
+}
+
+function idPlaceholderKind(id: string): PlaceholderKind | undefined {
+  const kinds = id
     .toLowerCase()
     .split(/[:_\-./]+/)
-    .some((token) => PLACEHOLDER_ID_TOKENS.has(token));
+    .flatMap((token) => PLACEHOLDER_ID_TOKENS.get(token) ?? [])
+    .map((placeholder) => ({ placeholder }));
+  return strongestPlaceholder(kinds)?.placeholder;
+}
+
+export interface MetaNotice {
+  placeholder: PlaceholderKind;
+  /** The notice's name, as the user sees it in the catalog. */
+  label: string;
 }
 
 /**
- * Whether a catalog item or meta is a notice ("TMDB key required", "Set up … first", a promo tile) rather than a title.
- * Returns the placeholder kind, defaulting to `needs-config` for notice IDs whose text doesn't say more.
+ * Whether a catalog item or meta is a notice ("TMDB key required", "Set up … first", a promo tile) rather than a title, and what it stands for.
+ * Its text and its ID can both say it; the stronger of the two wins, so `streamed:nebula-shared-free-expired` named "Private manifest required" reads as an error.
  */
-export function placeholderMeta(meta: unknown): PlaceholderKind | undefined {
+export function placeholderMeta(meta: unknown): MetaNotice | undefined {
   if (!meta || typeof meta !== "object") return undefined;
   const m = meta as Record<string, unknown>;
   const id = typeof m.id === "string" ? m.id : "";
   const text = [m.name, m.description].filter((v) => typeof v === "string").join(" · ");
-  return placeholderKind(text) ?? (hasPlaceholderIdToken(id) ? "needs-config" : undefined);
+  const kinds = [placeholderKind(text), idPlaceholderKind(id)].flatMap((placeholder) =>
+    placeholder ? [{ placeholder }] : [],
+  );
+  const placeholder = strongestPlaceholder(kinds)?.placeholder;
+  if (!placeholder) return undefined;
+  return { placeholder, label: labelOf(oneLine(typeof m.name === "string" ? m.name : id)) };
+}
+
+function oneLine(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
 }
 
 /** The text a user sees for a stream, on one line. */
 function visibleText(s: Record<string, unknown>): string {
-  return [s.name, s.title, s.description]
+  const text = [s.name, s.title, s.description]
     .filter((v): v is string => typeof v === "string" && v.trim() !== "")
-    .join(" · ")
-    .replace(/\s+/g, " ")
-    .trim();
+    .join(" · ");
+  return oneLine(text);
 }
 
 const MAX_LABEL_LENGTH = 120;

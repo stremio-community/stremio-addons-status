@@ -1,16 +1,18 @@
-import type {
-  Manifest,
-  ManifestCatalog,
-  MetaDetail,
-  MetaPreview,
-  Stream,
-} from "@stremio-addon/sdk";
+import type { Manifest, ManifestCatalog, MetaDetail, MetaPreview } from "@stremio-addon/sdk";
 import { config } from "./config.js";
 import { attemptsOf, describeParseError, getJson, type Attempt, type ParseError } from "./http.js";
 import { encodeId, errMsg } from "./utils.js";
 import { hasSourceFor, resolveForPrefixes, type TestContent } from "./idsources.js";
 import { logger } from "./logger.js";
 import { missingManifestFields, normalizeResources } from "./manifest.js";
+import {
+  classifyStream,
+  placeholderMeta,
+  repeatedFingerprints,
+  strongestPlaceholder,
+  type MetaNotice,
+  type StreamClass,
+} from "./streams.js";
 import type {
   DetailRow,
   NormalizedAddon,
@@ -18,33 +20,6 @@ import type {
   ProbeResult,
   ProbeMode,
 } from "./types.js";
-
-/**
- * Fields on a Stream that make it actually playable.
- *  Kept in sync with the SDK `Stream` interface via `satisfies (keyof Stream)[]`.
- * A stream is "valid" only if it carries at least one of these.
- */
-const STREAM_SOURCE_FIELDS = [
-  "url",
-  "ytId",
-  "infoHash",
-  "nzbUrl",
-  "rarUrls",
-  "zipUrls",
-  "7zipUrls",
-  "tgzUrls",
-  "tarUrls",
-  "externalUrl",
-] as const satisfies readonly (keyof Stream)[];
-
-function isPlayableStream(s: unknown): s is Stream {
-  if (!s || typeof s !== "object") return false;
-  const obj = s as Record<string, unknown>;
-  return STREAM_SOURCE_FIELDS.some((f) => {
-    const v = obj[f];
-    return Array.isArray(v) ? v.length > 0 : v != null && v !== "";
-  });
-}
 
 const EPISODIC_TYPES = new Set(["series", "anime", "tv", "channel"]);
 
@@ -156,6 +131,8 @@ interface CatalogProbeResult {
   ok: boolean;
   summary: string;
   details: DetailRow[];
+  /** Set when every item was a notice ("TMDB key required", a donation tile), so the catalog offers nothing to test with. */
+  notice?: MetaNotice;
 }
 
 async function fetchCatalogCandidate(
@@ -187,21 +164,32 @@ async function fetchCatalogCandidate(
       };
     }
     const metas = data?.metas ?? [];
-    const firstValid = metas.find((m) => missingMetaFields(m).length === 0);
-    if (!firstValid) {
+    const valid = metas.filter((m) => missingMetaFields(m).length === 0);
+    if (valid.length === 0) {
       const reason =
         metas.length === 0
           ? "returned no metas"
           : `none of ${metas.length} metas has an id, type and name`;
       return { ok: false, summary: "empty", details: requestRows(path, attempts, { reason }) };
     }
+    const firstReal = valid.find((m) => placeholderMeta(m) === undefined);
+    if (!firstReal) {
+      const notice = strongestPlaceholder(valid.map((m) => placeholderMeta(m)!))!;
+      return {
+        // A catalog of donation or news tiles still answers; it only has nothing to test with.
+        ok: notice.placeholder === "no-content",
+        summary: "only notices",
+        notice,
+        details: requestRows(path, attempts, { reason: `addon says: ${notice.label}` }),
+      };
+    }
     return {
       ok: true,
       summary: `${metas.length} metas`,
       details: requestRows(path, attempts),
       content: {
-        type: firstValid.type || picked.catalog.type,
-        id: firstValid.id,
+        type: firstReal.type || picked.catalog.type,
+        id: firstReal.id,
         source: "own catalog",
       },
     };
@@ -227,13 +215,159 @@ interface StreamProbeTarget extends TestContent {
   probeType: string;
 }
 
+/** One stream request as the addon answered it, before it is judged against the other targets. */
+interface StreamFetch {
+  target: StreamProbeTarget;
+  /** The ID the request asked for. */
+  id: string;
+  path: string;
+  testId: string;
+  attempts: Attempt[];
+  /** Unset when the request threw. */
+  status?: number;
+  streams: StreamClass[];
+  error?: string;
+}
+
+type Placeholder = Extract<StreamClass, { kind: "placeholder" }> & { repeated?: boolean };
+
+/**
+ * `content`: at least one real playable stream.
+ * `links`: no playable stream, but real links (externalUrl, trailers).
+ * `placeholder`: notices only, or links beside a notice saying the addon is broken or unconfigured, which are its request forms and configure links.
+ * `empty`: nothing usable; `failed`: no 2xx answer.
+ */
+type StreamOutcome = "content" | "links" | "placeholder" | "empty" | "failed";
+
 interface StreamCheckResult {
   target: StreamProbeTarget;
-  ok: boolean;
+  outcome: StreamOutcome;
   total: number;
-  valid: number;
+  playable: number;
+  links: number;
+  notice?: Placeholder;
   summary: string;
   details: DetailRow[];
+}
+
+/** A row of the stream condition: a check that ran, or a target that couldn't be sourced. */
+type StreamRow = Pick<StreamCheckResult, "target" | "summary" | "details">;
+
+/**
+ * A stream repeated for unrelated titles stands in for something other than the title.
+ * Without wording to say what, a configurable addon is most likely asking to be configured.
+ */
+function judgedStream(c: StreamClass, repeated: Set<string>, configurable: boolean): StreamClass {
+  if ((c.kind !== "playable" && c.kind !== "link") || !repeated.has(c.fingerprint)) return c;
+  const placeholder: Placeholder = {
+    kind: "placeholder",
+    placeholder: configurable ? "needs-config" : "no-content",
+    fingerprint: c.fingerprint,
+    label: c.label,
+    repeated: true,
+  };
+  return placeholder;
+}
+
+function plural(n: number, word: string): string {
+  return `${n} ${word}${n === 1 ? "" : "s"}`;
+}
+
+function judgeStreamFetch(
+  f: StreamFetch,
+  repeated: Set<string>,
+  configurable: boolean,
+): StreamCheckResult {
+  const rows = (reason?: string) => requestRows(f.path, f.attempts, { testId: f.testId, reason });
+  const failed = { target: f.target, outcome: "failed" as const, total: 0, playable: 0, links: 0 };
+  if (f.status === undefined) {
+    return { ...failed, summary: "unreachable", details: rows(f.error) };
+  }
+  if (!isOkStatus(f.status)) {
+    return {
+      ...failed,
+      summary: `HTTP ${f.status}`,
+      details: rows(`addon responded with HTTP ${f.status}`),
+    };
+  }
+  const streams = f.streams.map((c) => judgedStream(c, repeated, configurable));
+  const total = streams.length;
+  const playable = streams.filter((c) => c.kind === "playable").length;
+  const links = streams.filter((c) => c.kind === "link").length;
+  const notice = strongestPlaceholder(
+    streams.filter((c): c is Placeholder => c.kind === "placeholder"),
+  );
+  const outcome: StreamOutcome =
+    playable > 0
+      ? "content"
+      : notice && notice.placeholder !== "no-content"
+        ? "placeholder"
+        : links > 0
+          ? "links"
+          : notice
+            ? "placeholder"
+            : "empty";
+  const reason =
+    outcome === "links"
+      ? "only links, no playable stream"
+      : outcome === "placeholder"
+        ? noticeReason(notice!)
+        : outcome === "empty"
+          ? total === 0
+            ? "returned no streams"
+            : `none of ${total} streams has a playable source`
+          : undefined;
+  const summary =
+    total === 0
+      ? "no streams"
+      : `${playable} playable${links > 0 ? `, ${plural(links, "link")}` : ""} of ${total}`;
+  return {
+    target: f.target,
+    outcome,
+    total,
+    playable,
+    links,
+    notice,
+    summary,
+    details: rows(reason),
+  };
+}
+
+function noticeReason(notice: Placeholder): string {
+  if (notice.repeated) {
+    return notice.label
+      ? `same stream for unrelated titles: ${notice.label}`
+      : "same stream for unrelated titles";
+  }
+  return `addon says: ${notice.label}`;
+}
+
+/** Judge every target's answer, comparing them so a stream recurring for unrelated titles can't pass as content. */
+function judgeStreamFetches(fetches: StreamFetch[], configurable: boolean): StreamCheckResult[] {
+  const byTestId = new Map<string, StreamClass[]>();
+  for (const f of fetches) {
+    if (f.status !== undefined && isOkStatus(f.status) && !byTestId.has(f.id)) {
+      byTestId.set(f.id, f.streams);
+    }
+  }
+  const repeated = repeatedFingerprints([...byTestId.values()]);
+  return fetches.map((f) => judgeStreamFetch(f, repeated, configurable));
+}
+
+type StreamVerdict =
+  { kind: "content" | "links" | "down" } | { kind: "needs-config" | "error"; reason: string };
+
+/**
+ * Any target with real content passes; an addon answering only real links is a link/info addon and passes too.
+ * Otherwise its notices decide: an error notice is DOWN with the notice as the reason, a plea to configure is needs-config.
+ */
+function streamVerdict(checks: StreamCheckResult[]): StreamVerdict {
+  if (checks.some((c) => c.outcome === "content")) return { kind: "content" };
+  if (checks.some((c) => c.outcome === "links")) return { kind: "links" };
+  const notice = strongestPlaceholder(checks.flatMap((c) => c.notice ?? []));
+  if (notice?.placeholder === "error") return { kind: "error", reason: notice.label };
+  if (notice?.placeholder === "needs-config") return { kind: "needs-config", reason: notice.label };
+  return { kind: "down" };
 }
 
 function advertisedStreamProbeTypes(types: readonly string[]): TargetedStreamProbeType[] {
@@ -252,22 +386,33 @@ function pickCandidateForType(
   return candidate ? { ...candidate, probeType: type } : null;
 }
 
-function streamSummary(checks: StreamCheckResult[]): string {
-  return checks.map((c) => `${c.target.probeType} ${c.summary}`).join(" · ");
+/**
+ * A catalog addon whose stream resource is optional or empty by design (debrid-only, a stub) answers no streams at all, without error, even for its own titles.
+ * Only for IMDb titles, which the user's other addons stream: an addon with its own ID space is the only one that can stream its titles, so answering nothing means it is broken.
+ * Notices don't qualify either: an addon answering "no data" for every title has a stream resource that is its point.
+ */
+function isAuxiliaryStream(
+  checks: StreamCheckResult[],
+  catalogChecks: CatalogProbeResult[],
+): boolean {
+  return (
+    checks.some((c) => c.target.source === "own catalog") &&
+    checks.every(
+      (c) =>
+        c.outcome === "empty" && c.total === 0 && /^tt\d+/.test(c.target.episodeId ?? c.target.id),
+    ) &&
+    catalogChecks.some((c) => c.content) &&
+    catalogChecks.every((c) => c.ok)
+  );
 }
 
-function streamVerdict(checks: StreamCheckResult[]): boolean {
-  if (checks.length === 0) return false;
-  if (checks.length === 1) return checks[0].ok;
-  return checks.some((c) => c.ok && c.valid > 1);
+function streamSummary(rows: StreamRow[]): string {
+  return rows.map((c) => `${c.target.probeType} ${c.summary}`).join(" · ");
 }
 
-function missingStreamCheck(probeType: TargetedStreamProbeType, reason: string): StreamCheckResult {
+function missingStreamCheck(probeType: TargetedStreamProbeType, reason: string): StreamRow {
   return {
     target: { probeType, type: probeType, id: "" },
-    ok: false,
-    total: 0,
-    valid: 0,
     summary: reason,
     details: [{ label: "Skipped", value: `${probeType}: ${reason}` }],
   };
@@ -362,6 +507,17 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
     });
   };
 
+  const needsConfiguration = (reason: string): ProbeResult => {
+    log.debug({ step: "verdict", mode: "needs-config", reason }, `needs configuration: ${reason}`);
+    return result(true, `manifest reachable · needs configuration (${reason})`, start, {
+      live: true,
+      manifestDetails,
+      mode: "needs-config",
+      configReason: reason,
+      perResource,
+    });
+  };
+
   // Step 2: Discovery / early liveness-only.
   if (live.behaviorHints?.configurationRequired === true)
     return livenessOnly("configurationRequired");
@@ -372,7 +528,7 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
   const advertisedStreamTypes = streamRes ? advertisedStreamProbeTypes(streamRes.types) : [];
 
   // Primary content resource: stream > catalog > meta.
-  const primary: "stream" | "catalog" | "meta" | null = streamRes
+  let primary: "stream" | "catalog" | "meta" | null = streamRes
     ? "stream"
     : catalogTestable
       ? "catalog"
@@ -386,10 +542,10 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
   // Step 3: Source a real, servable test ID.
   let test: TestContent | null = null;
   const streamTargets: StreamProbeTarget[] = [];
+  const catalogChecks: CatalogProbeResult[] = [];
 
   if (catalogTestable) {
     if (streamRes) {
-      const catalogChecks: CatalogProbeResult[] = [];
       if (advertisedStreamTypes.length > 0) {
         const results = await Promise.all(
           advertisedStreamTypes.map(async (probeType) => ({
@@ -450,6 +606,7 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
     } else {
       const found = await fetchCatalogCandidate(addon.baseUrl, catalogs);
       if (found) {
+        catalogChecks.push(found);
         perResource.push({
           resource: "catalog",
           ok: found.ok,
@@ -519,6 +676,26 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
     }
   }
 
+  // Every catalog item was a notice and nothing else supplied a test ID: the notice is the addon's answer.
+  const catalogNotice = strongestPlaceholder(catalogChecks.flatMap((c) => c.notice ?? []));
+  if (catalogNotice && !test && streamTargets.length === 0) {
+    if (catalogNotice.placeholder === "needs-config")
+      return needsConfiguration(catalogNotice.label);
+    if (catalogNotice.placeholder === "error") {
+      log.debug(
+        { step: "verdict", mode: "content", notice: catalogNotice.label },
+        "content DOWN: catalog holds only an error notice",
+      );
+      return result(
+        false,
+        `manifest up · catalog: ${perResource.find((r) => r.resource === "catalog")?.summary}`,
+        start,
+        { live: true, manifestDetails, mode: "content", primary: "catalog", perResource },
+        "catalog",
+      );
+    }
+  }
+
   // For episodic content, a stream query needs an episode id.
   const ensureEpisodeId = async (target: TestContent & { probeType?: string }): Promise<void> => {
     if (target.episodeId || !EPISODIC_TYPES.has(target.type)) return;
@@ -546,7 +723,8 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
   if (test && !streamTargets.some((target) => target === test)) await ensureEpisodeId(test);
 
   // Step 4: Validate resources.
-  let streamCounts: { total: number; valid: number } | undefined;
+  let streamCounts: ProbeResult["detail"]["streamCounts"];
+  let streamOutcome: StreamVerdict | undefined;
 
   if (streamRes) {
     const targetedStreamMode =
@@ -572,83 +750,77 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
       return livenessOnly("no test ID source for stream prefixes");
     }
 
-    const streamChecks = await Promise.all(
-      resolvableTargets.map(async (target): Promise<StreamCheckResult> => {
+    const streamFetches = await Promise.all(
+      resolvableTargets.map(async (target): Promise<StreamFetch> => {
         const type = target.type;
         const id = target.episodeId ?? target.id;
         const path = `/stream/${type}/${encodeId(id)}.json`;
-        const testId = describeTestId(id, target.source);
+        const base = { target, id, path, testId: describeTestId(id, target.source) };
         try {
           const { status, data, attempts } = await getJson<StreamResponse>(
             addon.baseUrl + path,
             config.timeouts.stream,
           );
-          const streams = Array.isArray(data?.streams) ? data!.streams! : [];
-          const valid = streams.filter(isPlayableStream).length;
-          const ok = isOkStatus(status) && valid >= 1;
-          const reason = !isOkStatus(status)
-            ? `addon responded with HTTP ${status}`
-            : streams.length === 0
-              ? "returned no streams"
-              : valid === 0
-                ? `none of ${streams.length} streams has a playable source`
-                : undefined;
-          log.debug(
-            {
-              step: "stream",
-              ok,
-              status,
-              valid,
-              total: streams.length,
-              probeType: target.probeType,
-              type,
-              id,
-            },
-            `stream check ${ok ? "ok" : "fail"}: ${target.probeType} ${valid}/${streams.length} playable`,
-          );
-          return {
-            target,
-            ok,
-            total: streams.length,
-            valid,
-            summary: isOkStatus(status) ? `${valid} of ${streams.length} valid` : `HTTP ${status}`,
-            details: requestRows(path, attempts, { testId, reason }),
-          };
+          const raw = Array.isArray(data?.streams) ? data!.streams! : [];
+          const streams = raw.map((st) => classifyStream(st, { baseUrl: addon.baseUrl }));
+          return { ...base, status, attempts, streams };
         } catch (e) {
-          log.debug(
-            { step: "stream", ok: false, err: errMsg(e), probeType: target.probeType, type, id },
-            "stream fetch threw",
-          );
-          return {
-            target,
-            ok: false,
-            total: 0,
-            valid: 0,
-            summary: "unreachable",
-            details: requestRows(path, attemptsOf(e), { testId, reason: errMsg(e) }),
-          };
+          return { ...base, attempts: attemptsOf(e), streams: [], error: errMsg(e) };
         }
       }),
     );
+    const streamChecks = judgeStreamFetches(
+      streamFetches,
+      live.behaviorHints?.configurable === true,
+    );
+    for (const check of streamChecks) {
+      log.debug(
+        {
+          step: "stream",
+          outcome: check.outcome,
+          playable: check.playable,
+          links: check.links,
+          total: check.total,
+          probeType: check.target.probeType,
+          type: check.target.type,
+          id: check.target.episodeId ?? check.target.id,
+        },
+        `stream check ${check.outcome}: ${check.target.probeType} ${check.summary}`,
+      );
+    }
 
     streamCounts = {
       total: streamChecks.reduce((sum, check) => sum + check.total, 0),
-      valid: streamChecks.reduce((sum, check) => sum + check.valid, 0),
+      playable: streamChecks.reduce((sum, check) => sum + check.playable, 0),
+      links: streamChecks.reduce((sum, check) => sum + check.links, 0),
     };
-    const streamOk = streamVerdict(streamChecks);
-    const allStreamChecks = [...missingAdvertisedTargets, ...streamChecks];
-    const streamDetails = allStreamChecks.flatMap((check) => check.details);
-    if (!streamOk && streamChecks.some((check) => check.ok)) {
+    streamOutcome = streamVerdict(streamChecks);
+    // Catalogs announcing the addon needs configuration explain why borrowed titles got nothing either.
+    if (
+      streamOutcome.kind === "down" &&
+      catalogNotice &&
+      catalogNotice.placeholder !== "no-content"
+    ) {
+      streamOutcome = { kind: catalogNotice.placeholder, reason: catalogNotice.label };
+    }
+    const streamDetails = [...missingAdvertisedTargets, ...streamChecks].flatMap(
+      (check) => check.details,
+    );
+    if (streamOutcome.kind === "links") {
+      streamDetails.push({ label: "Note", value: "link addon: links only, not content-checked" });
+    }
+    // A catalog addon whose stream resource answers nothing for its own titles is judged on its catalogs.
+    if (streamOutcome.kind === "down" && isAuxiliaryStream(streamChecks, catalogChecks)) {
+      primary = "catalog";
       streamDetails.push({
-        label: "Reason",
-        value: "no target returned more than 1 playable stream",
+        label: "Note",
+        value: "no streams for the addon's own catalog titles; judged on its catalogs",
       });
     }
     perResource.push({
       resource: "stream",
-      // Unsourced targets only annotate: an ID source outage must not turn into a DOWN.
-      ok: streamOk,
-      summary: streamSummary(allStreamChecks),
+      ok: streamOutcome.kind === "content" || streamOutcome.kind === "links",
+      summary: streamSummary([...missingAdvertisedTargets, ...streamChecks]),
       details: streamDetails,
     });
   }
@@ -738,6 +910,8 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
       /* secondary: ignore */
     }
   }
+
+  if (streamOutcome?.kind === "needs-config") return needsConfiguration(streamOutcome.reason);
 
   // Step 5: Verdict from the primary resource.
   const primaryResult = perResource.find((r) => r.resource === primary);

@@ -207,7 +207,8 @@ function truncate(text: string, maxBytes: number): string {
  * The status page is public and a base URL can carry the addon's config or API key, so every occurrence of it is stripped, leaving paths relative to the base.
  */
 export function buildConditions(r: ProbeResult, baseUrl: string): ConditionResult[] {
-  const { live, livenessError, manifestDetails, primary, skipReason, perResource } = r.detail;
+  const { live, livenessError, manifestDetails, primary, skipReason, configReason, perResource } =
+    r.detail;
   const redact = (text: string) => (baseUrl ? text.replaceAll(baseUrl, "") : text);
   const condition = (
     text: string,
@@ -239,6 +240,15 @@ export function buildConditions(r: ProbeResult, baseUrl: string): ConditionResul
   }
   if (skipReason) {
     conditions.push(condition(`content: not deep-checked (${skipReason})`, true));
+  }
+  if (r.detail.mode === "needs-config") {
+    conditions.push(
+      condition(
+        "content: needs configuration",
+        true,
+        configReason ? [{ label: "Reason", value: configReason }] : [],
+      ),
+    );
   }
   // A red result must say why on the status page and in the alert, even when the probe recorded no failing check.
   if (!r.success && conditions.every((c) => c.success)) {
