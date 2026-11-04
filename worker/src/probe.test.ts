@@ -4,6 +4,7 @@ import type { NormalizedAddon } from "./types.js";
 import type { TestContent } from "./idsources.js";
 import type { Attempt, GetJsonOptions, ParseError, Route } from "./http.js";
 import type { NormResource } from "./manifest.js";
+import type { LinkPage, UrlCheck, UrlToCheck } from "./urlcheck.js";
 
 // --- mocks -----------------------------------------------------------------
 
@@ -38,6 +39,25 @@ vi.mock("./http.js", async (importOriginal) => ({
       ],
     };
   },
+}));
+
+const PLAYS = (u: UrlToCheck): UrlCheck => ({
+  host: new URL(u.url).hostname,
+  verdict: "playable",
+  outcome: "HTTP 206 video/mp4",
+});
+const urlcheckMock = {
+  checkUrl: async (u: UrlToCheck): Promise<UrlCheck> => PLAYS(u),
+  followLink: async (url: string): Promise<LinkPage> => ({
+    host: new URL(url).hostname,
+    status: 200,
+  }),
+};
+
+vi.mock("./urlcheck.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./urlcheck.js")>()),
+  checkUrl: (u: UrlToCheck) => urlcheckMock.checkUrl(u),
+  followLink: (url: string) => urlcheckMock.followLink(url),
 }));
 
 vi.mock("./idsources.js", () => ({
@@ -112,6 +132,8 @@ const HTML_PAGE: RouteResult = {
 };
 
 beforeEach(() => {
+  urlcheckMock.checkUrl = async (u) => PLAYS(u);
+  urlcheckMock.followLink = async (url) => ({ host: new URL(url).hostname, status: 200 });
   idsourcesMock.hasSourceFor = () => false;
   idsourcesMock.candidatesFor = async () => [];
   forgetRememberedTargets();
@@ -1279,8 +1301,15 @@ describe("probe stream content", () => {
       url: "https://status.test/torrentio",
     };
     overrides.u = { name: "Stremio Status", sameStreamsForEveryTitle: "a status board" };
+    // Its cards open status pages, which aren't media and aren't meant to be.
+    let checked = 0;
+    urlcheckMock.checkUrl = async (u) => {
+      checked++;
+      return { host: new URL(u.url).hostname, verdict: "webpage", outcome: "HTTP 200 text/html" };
+    };
     try {
       const r = await probeDual([card], [card], { behaviorHints: { configurable: true } });
+      expect(checked).toBe(0);
       expect(r.success).toBe(true);
       expect(r.detail.mode).toBe("content");
     } finally {
@@ -3424,5 +3453,336 @@ describe("probe CORS", () => {
     ]);
     const r = await probe(m);
     expect(r.detail.perResource.map((x) => x.resource)).not.toContain("cors");
+  });
+});
+
+describe("probe stream URL checks", () => {
+  /** A live-TV addon whose own catalog lists `channels`, each answering `streamsOf(id)`. */
+  async function probeTv(
+    channels: string[],
+    streamsOf: (id: string) => unknown[],
+    extra: Array<[string, RouteResult]> = [],
+  ) {
+    const m = addon({
+      types: ["tv"],
+      resources: ["catalog", "stream"],
+      catalogs: [{ type: "tv", id: "channels", name: "Channels" }],
+    });
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/catalog/tv/channels.json",
+        { status: 200, data: { metas: channels.map((id) => ({ id, type: "tv", name: id })) } },
+      ],
+      ...extra,
+      ...channels.map((id): [string, RouteResult] => [
+        `/stream/tv/${id}.json`,
+        { status: 200, data: { streams: streamsOf(id) } },
+      ]),
+    ]);
+    return probe(m);
+  }
+
+  const streamOf = (r: Awaited<ReturnType<typeof probe>>) =>
+    r.detail.perResource.find((p) => p.resource === "stream");
+  const verdictOf =
+    (verdicts: Record<string, Omit<UrlCheck, "host">>) =>
+    async (u: UrlToCheck): Promise<UrlCheck> => ({
+      host: new URL(u.url).hostname,
+      ...(verdicts[new URL(u.url).hostname] ?? { verdict: "playable", outcome: "HTTP 206" }),
+    });
+  const NXDOMAIN = { verdict: "dead", outcome: "NXDOMAIN" } as const;
+  const GEO = { verdict: "unverifiable", outcome: "HTTP 403 text/html, blocked" } as const;
+
+  it("is DOWN when every checked stream URL is dead, naming hosts but never the URL (FTV Channels)", async () => {
+    const checked: UrlToCheck[] = [];
+    urlcheckMock.checkUrl = async (u) => {
+      checked.push(u);
+      return verdictOf({ "fash1.erosnow.test": NXDOMAIN })(u);
+    };
+    const hls = (id: string, q: string) => ({
+      name: "FTV Paris",
+      title: q,
+      url: `https://fash1.erosnow.test/slive/${id}_${q}/chunklist.m3u8?token=secret`,
+    });
+    const r = await probeTv(["ftv_paris", "ftv_midnight"], (id) =>
+      ["1080p", "720p", "480p"].map((q) => hls(id, q)),
+    );
+    expect(r.success).toBe(false);
+    expect(r.error).toBe("stream");
+    expect(streamOf(r)?.summary).toBe("tv 2 of 2 URLs dead (2 IDs)");
+    expect(r.detail.streamCounts?.playable).toBe(0);
+    expect(streamOf(r)?.details).toContainEqual({
+      label: "Reason",
+      value:
+        "no checked stream URL plays: fash1.erosnow.test NXDOMAIN; fash1.erosnow.test NXDOMAIN",
+    });
+    expect(streamOf(r)?.details).toContainEqual({
+      label: "URL check",
+      value: "2 dead of 2 · fash1.erosnow.test: NXDOMAIN; fash1.erosnow.test: NXDOMAIN",
+    });
+    // Only the first two URLs of each title, and a second title before giving up.
+    expect(checked).toHaveLength(4);
+    expect(JSON.stringify(r)).not.toContain("secret");
+  });
+
+  it("tries another title when one title's URLs are dead, and passes on one that plays (a removed file)", async () => {
+    urlcheckMock.checkUrl = verdictOf({ "gone.test": { verdict: "dead", outcome: "HTTP 404" } });
+    const r = await probeTv(["a", "b"], (id) => [
+      { title: id, url: `https://${id === "a" ? "gone" : "cdn"}.test/${id}.m3u8` },
+    ]);
+    expect(r.success).toBe(true);
+    expect(streamOf(r)?.summary).toBe("tv 1 playable of 1");
+    expect(streamOf(r)?.details).toContainEqual({
+      label: "URL check",
+      value: "1 playable of 1 · cdn.test: HTTP 206",
+    });
+  });
+
+  it("stays UP when the checked URL is geo-blocked or rate limited, which may play elsewhere (Israeli TV)", async () => {
+    urlcheckMock.checkUrl = verdictOf({ "cloudfront.test": GEO });
+    const r = await probeTv(["iltv_5goldil"], () => [
+      { title: "5Gold", url: "https://cloudfront.test/live/playlist.m3u8" },
+    ]);
+    expect(r.success).toBe(true);
+    expect(streamOf(r)?.details).toContainEqual({
+      label: "URL check",
+      value: "1 unverifiable of 1 · cloudfront.test: HTTP 403 text/html, blocked",
+    });
+  });
+
+  it("passes an informational addon whose stream URLs all open web pages as a link addon (Stremio Stinger)", async () => {
+    urlcheckMock.checkUrl = async (u) => ({
+      host: new URL(u.url).hostname,
+      verdict: "webpage",
+      outcome: "HTTP 200 text/html, web page",
+    });
+    const r = await probeTv(["a"], () => [
+      { name: "🍿 Mid & Post-Credits Scenes", url: "https://aftercredits.test/2019/04/a/" },
+    ]);
+    expect(r.success).toBe(true);
+    expect(streamOf(r)?.summary).toBe("tv 1 of 1 URLs web pages");
+    expect(streamOf(r)?.details).toContainEqual({
+      label: "Note",
+      value: "link addon: links only, not content-checked",
+    });
+  });
+
+  it("is DOWN when stream URLs are web pages beside a dead host (StreamPlay's embeds)", async () => {
+    urlcheckMock.checkUrl = verdictOf({
+      "vidlink.test": { verdict: "webpage", outcome: "HTTP 200 text/html, web page" },
+      "vidsrc.test": NXDOMAIN,
+    });
+    const r = await probeTv(["a", "b"], (id) => [
+      { name: "Vidlink", url: `https://vidlink.test/movie/${id}` },
+      { name: "Vidsrc", url: `https://vidsrc.test/embed/movie/${id}` },
+    ]);
+    expect(r.success).toBe(false);
+    expect(streamOf(r)?.summary).toBe("tv no URL plays (2 IDs)");
+  });
+
+  it("does not check torrents or debrid links, which a dead URL beside them couldn't fail", async () => {
+    let calls = 0;
+    urlcheckMock.checkUrl = async (u) => {
+      calls++;
+      return { host: new URL(u.url).hostname, ...NXDOMAIN };
+    };
+    const r = await probeTv(["a"], () => [
+      { title: "web", url: "https://gone.test/a.mp4" },
+      { title: "torrent", infoHash: "a".repeat(40) },
+    ]);
+    expect(r.success).toBe(true);
+    expect(calls).toBe(0);
+  });
+
+  it("is DOWN when playable streams are dead, even with links beside them (Ultrapelis)", async () => {
+    urlcheckMock.checkUrl = verdictOf({
+      "archive.test": { verdict: "dead", outcome: "HTTP 403 text/html, gone" },
+    });
+    const m = addon({
+      types: ["movie", "series"],
+      resources: [{ name: "stream", types: ["movie", "series"], idPrefixes: ["tt"] }],
+    });
+    idsourcesMock.hasSourceFor = () => true;
+    idsourcesMock.candidatesFor = async () => [
+      { type: "movie", id: "tt0111161" },
+      { type: "series", id: "tt0903747", episodeId: "tt0903747:1:1" },
+    ];
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/stream/movie/tt0111161.json",
+        {
+          status: 200,
+          data: {
+            streams: [{ name: "Servidor principal", externalUrl: "https://vimeos.test/e/1" }],
+          },
+        },
+      ],
+      [
+        "/stream/series/tt0903747:1:1.json",
+        {
+          status: 200,
+          data: {
+            streams: [
+              { name: "Servidor alterno", externalUrl: "https://myvidplay.test/e/2" },
+              { name: "Archive", url: "https://archive.test/serve/item/e1.mp4" },
+            ],
+          },
+        },
+      ],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(false);
+    expect(streamOf(r)?.summary).toBe("movie 0 playable, 1 link of 1 · series 1 of 1 URLs dead");
+  });
+
+  describe("negative control", () => {
+    const embeds = (kind: string, id: string) => [
+      { name: "[StreamPlay] Vidlink 1080p", url: `https://vidlink.test/${kind}/${id}` },
+      { name: "[StreamPlay] Server Vidsrc", url: `https://vidsrc.test/embed/${kind}/${id}` },
+      { name: "[StreamPlay] AutoEmbed Fast", url: `https://autoembed.test/embed/${kind}/${id}` },
+    ];
+    /** A catalog-less addon answering every `tt` ID with `streamsOf`, the nonexistent one included. */
+    async function probeTemplated(streamsOf: (type: string, id: string) => unknown[] | undefined) {
+      const m = addon({
+        types: ["movie", "series"],
+        resources: [{ name: "stream", types: ["movie", "series"], idPrefixes: ["tt"] }],
+      });
+      idsourcesMock.hasSourceFor = () => true;
+      idsourcesMock.candidatesFor = async () => [
+        { type: "movie", id: "tt0111161" },
+        { type: "series", id: "tt0903747", episodeId: "tt0903747:1:1" },
+      ];
+      const asked: string[] = [];
+      router = (url) => {
+        if (url.endsWith("/manifest.json")) return manifestOk(m.manifest);
+        const match = /\/stream\/(\w+)\/([^/]+)\.json$/.exec(url);
+        if (!match) throw new Error(`no route for ${url}`);
+        asked.push(match[2]);
+        const streams = streamsOf(match[1], match[2]);
+        return streams ? { status: 200, data: { streams } } : { status: 404, data: undefined };
+      };
+      return { r: await probe(m), asked };
+    }
+
+    it("is DOWN when an addon answers a nonexistent ID with stream URLs and none of them plays (StreamPlay)", async () => {
+      urlcheckMock.checkUrl = verdictOf({
+        "vidlink.test": GEO,
+        "vidsrc.test": { verdict: "unverifiable", outcome: "timed out" },
+      });
+      const { r, asked } = await probeTemplated((type, id) =>
+        embeds(type === "series" ? "tv" : "movie", id),
+      );
+      expect(asked.filter((id) => id.startsWith("tt9999999999"))).toEqual(["tt9999999999"]);
+      expect(r.success).toBe(false);
+      expect(streamOf(r)?.summary).toBe(
+        "movie templated, no URL plays · series templated, no URL plays",
+      );
+      expect(streamOf(r)?.details).toContainEqual({
+        label: "Note",
+        value: "templated: the nonexistent tt9999999999 gets 3 streams too",
+      });
+    });
+
+    it("passes a templating addon whose checked URL plays", async () => {
+      urlcheckMock.checkUrl = verdictOf({ "vidsrc.test": GEO });
+      const { r } = await probeTemplated((type, id) => embeds(type, id));
+      expect(r.success).toBe(true);
+    });
+
+    it("trusts unverifiable URLs of an addon that answers nothing for a nonexistent ID", async () => {
+      urlcheckMock.checkUrl = verdictOf({ "vidlink.test": GEO, "vidsrc.test": GEO });
+      const { r, asked } = await probeTemplated((type, id) =>
+        id.startsWith("tt9999999999") ? [] : embeds(type, id),
+      );
+      expect(asked).toContain("tt9999999999");
+      expect(r.success).toBe(true);
+    });
+
+    it("does not take a static card the real title got too for a template (Flix-Streams upsell)", async () => {
+      urlcheckMock.checkUrl = verdictOf({ "vidlink.test": GEO, "vidsrc.test": GEO });
+      const upsell = {
+        name: "FlixNest",
+        title: "Need more sources? Open Flix-Streams",
+        externalUrl: "https://flix.test/",
+      };
+      const { r } = await probeTemplated((type, id) =>
+        id.startsWith("tt9999999999") ? [upsell] : [...embeds(type, id), upsell],
+      );
+      expect(r.success).toBe(true);
+    });
+
+    it("annotates templated links, and opens one to read what its page says (MoviesInDetail)", async () => {
+      const opened: string[] = [];
+      urlcheckMock.followLink = async (url) => {
+        opened.push(url);
+        return {
+          host: "moviesindetail.test",
+          status: 200,
+          label: "Movies in Detail – One place for trailers, images, soundtracks & reviews",
+        };
+      };
+      const { r } = await probeTemplated((_type, id) => [
+        {
+          name: "MoviesInDetail",
+          title: `Open ${id} in MoviesInDetail`,
+          externalUrl: `https://moviesindetail.test/?q=${id}`,
+        },
+      ]);
+      expect(r.success).toBe(true);
+      expect(r.detail.mode).toBe("content");
+      expect(opened).toHaveLength(2);
+      expect(streamOf(r)?.summary).toBe(
+        "movie 0 playable, 1 link of 1 · series 0 playable, 1 link of 1 · templated links",
+      );
+      expect(streamOf(r)?.details).toContainEqual({
+        label: "Note",
+        value: "link addon: templated links (not content-checked)",
+      });
+      expect(streamOf(r)?.details).toContainEqual({
+        label: "Link check",
+        value:
+          "moviesindetail.test · HTTP 200 · Movies in Detail – One place for trailers, images, soundtracks & reviews",
+      });
+    });
+
+    it("reports a templated link whose page asks for an API key as needing configuration (Content Deep Dive Companion)", async () => {
+      // A popular title's deep dive is cached, so only the other title's page asks for a key.
+      urlcheckMock.followLink = async (url) =>
+        url.includes("tt0111161")
+          ? { host: "deepdive.test", status: 200, label: "Deep Dive: The Shawshank Redemption" }
+          : {
+              host: "deepdive.test",
+              status: 200,
+              label: "API Key Required - Content Deep Dive",
+              placeholder: "needs-config",
+            };
+      const { r } = await probeTemplated((_type, id) => [
+        {
+          name: "🔍 Deep Dive Analysis",
+          description: "Open detailed content analysis in browser",
+          externalUrl: `https://deepdive.test/deep_dive/${id}`,
+        },
+      ]);
+      expect(r.success).toBe(true);
+      expect(r.detail.mode).toBe("needs-config");
+      expect(r.detail.configReason).toBe("API Key Required - Content Deep Dive");
+    });
+
+    it("does not open the links of an addon that answers nothing for a nonexistent ID (IMDb ratings)", async () => {
+      let opened = 0;
+      urlcheckMock.followLink = async (url) => {
+        opened++;
+        return { host: new URL(url).hostname, status: 200 };
+      };
+      const { r } = await probeTemplated((_type, id) =>
+        id.startsWith("tt9999999999")
+          ? undefined
+          : [{ name: "IMDb Rating", externalUrl: `https://imdb.test/title/${id}/` }],
+      );
+      expect(r.success).toBe(true);
+      expect(opened).toBe(0);
+    });
   });
 });
