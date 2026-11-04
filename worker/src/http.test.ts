@@ -409,6 +409,18 @@ describe("getJson usable option", () => {
     expect(h.state.calls).toEqual([true]);
   });
 
+  it("lets a throwing predicate fail the call instead of passing for a transport failure", async () => {
+    h.state.handler = scripted([json(200, { streams: [] })], []);
+    const usable = () => {
+      throw new Error("bad predicate");
+    };
+    const err = await getJson("http://addon/stream/movie/tt1.json", 1000, { usable }).catch(
+      (e: unknown) => e,
+    );
+    expect(err).not.toBeInstanceOf(RequestFailedError);
+    expect((err as Error).message).toBe("bad predicate");
+  });
+
   it("does not judge a non-2xx answer", async () => {
     const usable = vi.fn(() => false);
     h.state.handler = scripted([json(404, { streams: [] })], []);

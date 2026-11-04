@@ -215,31 +215,9 @@ export async function getJson<T = unknown>(
 
   const once = async (route: Route): Promise<Try<T>> => {
     const start = Date.now();
+    let fetched: Awaited<ReturnType<typeof fetchJson<T>>>;
     try {
-      const { redirect, retryAfterMs, ...answer } = await fetchJson<T>(
-        url,
-        timeout,
-        dispatcherOf(route),
-      );
-      attempts.push({
-        route,
-        status: answer.status,
-        durationMs: Date.now() - start,
-        ...(redirect ? { redirect } : {}),
-      });
-      const t = { route, rank: rankOf(answer), answer };
-      tries.push(t);
-      if (
-        RETRY_AFTER_STATUSES.has(answer.status) &&
-        retryAfterMs !== undefined &&
-        retryAfterMs <= MAX_RETRY_AFTER_MS &&
-        !honouredRetryAfter.has(route)
-      ) {
-        honouredRetryAfter.add(route);
-        await sleep(retryAfterMs);
-        return once(route);
-      }
-      return t;
+      fetched = await fetchJson<T>(url, timeout, dispatcherOf(route));
     } catch (error) {
       const timedOut = isTimeout(error);
       attempts.push({
@@ -252,6 +230,26 @@ export async function getJson<T = unknown>(
       tries.push(t);
       return t;
     }
+    const { redirect, retryAfterMs, ...answer } = fetched;
+    attempts.push({
+      route,
+      status: answer.status,
+      durationMs: Date.now() - start,
+      ...(redirect ? { redirect } : {}),
+    });
+    const t = { route, rank: rankOf(answer), answer };
+    tries.push(t);
+    if (
+      RETRY_AFTER_STATUSES.has(answer.status) &&
+      retryAfterMs !== undefined &&
+      retryAfterMs <= MAX_RETRY_AFTER_MS &&
+      !honouredRetryAfter.has(route)
+    ) {
+      honouredRetryAfter.add(route);
+      await sleep(retryAfterMs);
+      return once(route);
+    }
+    return t;
   };
 
   const routes: Route[] = proxy ? ["WARP", "direct"] : ["direct"];
