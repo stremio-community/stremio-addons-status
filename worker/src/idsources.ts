@@ -2,6 +2,7 @@ import type { MetaDetail, MetaPreview } from "@stremio-addon/sdk";
 import { getJson } from "./http.js";
 import { encodeId } from "./utils.js";
 import { config } from "./config.js";
+import { resourceAccepts, type NormResource } from "./manifest.js";
 
 export interface TestContent {
   type: string;
@@ -132,4 +133,14 @@ export async function resolveForPrefixes(idPrefixes: readonly string[]): Promise
 export function hasSourceFor(idPrefixes: readonly string[]): boolean {
   const wanted = idPrefixes.map(normalizePrefix);
   return SOURCES.some((s) => s.prefixes.some((sp) => wanted.includes(sp)));
+}
+
+/**
+ * Ordered test IDs for a stream or subtitles resource, best fit first, from every source whose prefixes and types the resource accepts.
+ * Callers try them in order and stop at the first that yields content, so later entries cost nothing for a healthy addon.
+ */
+export async function candidatesFor(res: NormResource): Promise<TestContent[]> {
+  if (!hasSourceFor(res.idPrefixes)) return [];
+  const all = await resolveForPrefixes(res.idPrefixes);
+  return all.filter((c) => resourceAccepts(res, c.type, c.episodeId ?? c.id));
 }
