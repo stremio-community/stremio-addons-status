@@ -50,7 +50,7 @@ import {
   type MetaNotice,
   type StreamClass,
 } from "./streams.js";
-import { checkSubtitles, subtitleTargets } from "./subtitles.js";
+import { checkSubtitles, subtitleTargets, translatesSubtitles } from "./subtitles.js";
 import { unconfiguredReason, type ContentAnswer } from "./unconfigured.js";
 import {
   checkUrl,
@@ -1678,6 +1678,7 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
         maxTitles: MAX_SUBTITLE_TITLES,
         sniff: true,
         retry: true,
+        onDemand: override?.translatesSubtitles !== undefined || translatesSubtitles(live),
         log,
       },
     );
@@ -1793,7 +1794,7 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
       const check = await checkSubtitles(
         base,
         [{ type: test.type, id: test.id, source: test.source }],
-        { maxTitles: 1, sniff: false, retry: false, log },
+        { maxTitles: 1, sniff: false, retry: false, onDemand: false, log },
       );
       if (check) perResource.push(check.result);
     }

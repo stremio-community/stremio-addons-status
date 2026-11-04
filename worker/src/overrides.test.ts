@@ -11,7 +11,11 @@ describe("OVERRIDES", () => {
       expect(o.testConfig ?? "", uuid).not.toMatch(/^\/|\/$|manifest\.json/);
       expect(o.needsConfig ?? "x", uuid).not.toBe("");
       expect(
-        o.testConfig ?? o.needsConfig ?? o.testIds ?? o.sameStreamsForEveryTitle,
+        o.testConfig ??
+          o.needsConfig ??
+          o.testIds ??
+          o.sameStreamsForEveryTitle ??
+          o.translatesSubtitles,
         uuid,
       ).toBeDefined();
       for (const t of o.testIds ?? []) expect(t.id, uuid).not.toBe("");

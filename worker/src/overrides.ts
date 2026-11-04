@@ -22,6 +22,8 @@ export interface AddonOverride {
    * A subtitles-only addon is asked for them as they are, so a series ID names its episode, and answering no subtitles for every one of them is DOWN: name only titles its niche must carry.
    */
   testIds?: Array<{ type: string; id: string }>;
+  /** The addon translates or generates its subtitles on request without its manifest saying so, so the probe fetches only files it says are ready; the value says why. */
+  translatesSubtitles?: string;
   /** The addon answers the same streams for every title by design (a status board), so a stream repeated across titles isn't a placeholder; the value says why. */
   sameStreamsForEveryTitle?: string;
 }
@@ -104,6 +106,10 @@ export const OVERRIDES: Readonly<Record<string, AddonOverride>> = {
       { type: "series", id: "tt0121220" },
       { type: "series", id: "tt0088509" },
     ],
+  },
+  "b8fd7678-96a1-4b74-92c2-d1bbc290cc61": {
+    name: "SubMaker | ElfHosted",
+    translatesSubtitles: "it translates subtitles with the AI key in its config",
   },
   "040fae05-26db-4171-8156-e20e0eeb217c": {
     name: "Strelingo - Dual Language Subtitles",

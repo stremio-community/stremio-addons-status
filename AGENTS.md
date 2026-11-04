@@ -39,6 +39,7 @@ The point of the worker is to avoid false DOWNs. Preserve these when editing `pr
 - The worker never requests debrid services or a configured addon's resolve and playback routes, which add torrents to its user's account (`isProtectedUrl`).
 - A subtitles-only addon answering no subtitles for every title tried stays UP with a `0 found` annotation, since niche providers lack most titles; it is DOWN only when it has none for the titles its override's `testIds` name (`subtitles.ts`).
   A listed file that isn't a subtitle in its language, or that the addon's own host fails to serve on every route, fails its title; a third-party file host that fails doesn't.
+  A file translated or generated on request (its entry or the addon says so, or the override's `translatesSubtitles`) is never fetched unless it says it is ready, since that can start paid work on the operator's or the lister's key; skipping it never makes the addon DOWN.
 - A configurable addon is needs-config, not DOWN, when its manifest declares required configuration or its primary content routes are missing without a config (`unconfigured.ts`); an empty answer alone never makes it needs-config, and an override's `needsConfig` pin wins over any content verdict.
 
 ## Production

@@ -54,13 +54,19 @@ vi.mock("./idsources.js", () => ({
   candidatesFor: async (_res: NormResource) => h.candidates,
 }));
 
-const { checkSubtitles, judgeEntries, judgeFile, releaseFileName, subtitleTargets } =
-  await import("./subtitles.js");
+const {
+  checkSubtitles,
+  judgeEntries,
+  judgeFile,
+  releaseFileName,
+  subtitleTargets,
+  translatesSubtitles,
+} = await import("./subtitles.js");
 const { logger } = await import("./logger.js");
 
 const BASE = "https://addon.test";
 const log = logger.child({});
-const options = { maxTitles: 3, sniff: true, retry: true, log };
+const options = { maxTitles: 3, sniff: true, retry: true, onDemand: false, log };
 
 const json = (data: unknown, status = 200): Answer => ({ status, data });
 const subs = (subtitles: unknown[]): Answer => json({ subtitles });
@@ -479,6 +485,82 @@ describe("checkSubtitles", () => {
     expect(c?.result.summary).toBe("movie file unreachable");
   });
 
+  it.each([
+    [
+      "bgSubs' machine-translated files",
+      {
+        id: "os-3728010",
+        lang: "bg",
+        name: "3728010 (Translated OS)",
+        url: "https://bgsubs.test/download/abc?translate=1",
+      },
+    ],
+    [
+      "idk subs' AI entry not yet translated",
+      {
+        id: "heb-ai-0",
+        lang: "heb",
+        label: "AI Hebrew Translation",
+        url: "https://idk.test/ai/subtitle/x.srt",
+      },
+    ],
+    ["a DeepL track", { id: "deepl-tr", lang: "tur", url: "https://s.test/deepl/1.srt" }],
+    [
+      "a Gemini track",
+      { id: "1", lang: "vie", label: "Gemini Flash", url: "https://s.test/1.srt" },
+    ],
+  ])("lists %s without fetching them, which could start a paid translation", async (_n, entry) => {
+    h.listings.set(INCEPTION_EXTRA, subs([entry]));
+    const c = await checkSubtitles(BASE, [INCEPTION], options);
+    expect(h.sampled).toEqual([]);
+    expect(c?.verdict).toEqual({ kind: "content" });
+    expect(c?.result.details).toContainEqual({
+      label: "Note",
+      value: "file not checked: generated on request",
+    });
+  });
+
+  it("fetches a generated file that says it is ready, and the first plain file before a generated one", async () => {
+    const ready = {
+      id: "heb-ai-0",
+      lang: "heb",
+      label: "AI Hebrew Translation (ready)",
+      url: "https://idk.test/ai/subtitle/ready.srt",
+    };
+    h.listings.set(INCEPTION_EXTRA, subs([ready]));
+    h.files.set(ready.url, file(HEBREW));
+    await checkSubtitles(BASE, [INCEPTION], options);
+    expect(h.sampled).toEqual([ready.url]);
+
+    h.sampled.length = 0;
+    const plain = { id: "os-1", lang: "eng", url: "https://subs.test/1.srt" };
+    h.listings.set(
+      INCEPTION_EXTRA,
+      subs([
+        { ...ready, label: "AI Hebrew Translation", url: "https://idk.test/ai/subtitle/x.srt" },
+        plain,
+      ]),
+    );
+    h.files.set(plain.url, file(ENGLISH));
+    await checkSubtitles(BASE, [INCEPTION], options);
+    expect(h.sampled).toEqual([plain.url]);
+  });
+
+  it("fetches only ready files from an addon that translates on request", async () => {
+    const plain = { id: "os-1", lang: "eng", url: "https://subs.test/1.srt" };
+    h.listings.set(INCEPTION_EXTRA, subs([plain]));
+    const c = await checkSubtitles(BASE, [INCEPTION], { ...options, onDemand: true });
+    expect(h.sampled).toEqual([]);
+    expect(c?.verdict).toEqual({ kind: "content" });
+  });
+
+  it("never fetches a debrid or resolve URL", async () => {
+    const entry = { id: "1", lang: "eng", url: "https://real-debrid.com/d/abc.srt" };
+    h.listings.set(INCEPTION_EXTRA, subs([entry]));
+    await checkSubtitles(BASE, [INCEPTION], options);
+    expect(h.sampled).toEqual([]);
+  });
+
   it("reads an inline data: file without fetching it", async () => {
     const url = `data:application/x-subrip;charset=UTF-8,${encodeURIComponent(ENGLISH)}`;
     h.listings.set(INCEPTION_EXTRA, subs([{ id: "1", lang: "eng", url }]));
@@ -578,6 +660,54 @@ describe("checkSubtitles", () => {
 
   it("is undefined without a title to ask for", async () => {
     expect(await checkSubtitles(BASE, [], options)).toBeUndefined();
+  });
+});
+
+describe("translatesSubtitles", () => {
+  it.each([
+    [
+      {
+        id: "community.hebrew-ai-subs",
+        name: "idk subs",
+        description: "AI-translated Hebrew subtitles",
+      },
+    ],
+    [
+      {
+        id: "org.autotranslate.sonsuzanime",
+        name: "Auto Subtitle Translate by SonsuzAnime (DeepL)",
+      },
+    ],
+    [{ id: "com.nhamstudio.vietsub", name: "NhảmSubtitle AI" }],
+    [
+      {
+        name: "Sublatino - dAV1ron",
+        description: "Traducción automática al instante con DeepL, Gemini u OpenAI",
+      },
+    ],
+    [{ name: "SubSync", description: "can translate with Claude (your own API key)" }],
+    [{ name: "GTSubs", description: "Auto-translate subtitles using Google Translate" }],
+  ])("reads %j as translating", (manifest) => {
+    expect(translatesSubtitles(manifest)).toBe(true);
+  });
+
+  it.each([
+    [{ id: "org.bgsubs", name: "bgSubs", description: "Bulgarian subtitles - Български субтитри" }],
+    [
+      {
+        name: "Strelingo",
+        description: "Provides dual subtitles (main + translation) from OpenSubtitles",
+      },
+    ],
+    [
+      {
+        name: "Hebrew Subtitle Bridge",
+        description: "then other languages with optional translation",
+      },
+    ],
+    [{ name: "OpenSubtitles v3" }],
+  ])("reads %j as serving existing files", (manifest) => {
+    expect(translatesSubtitles(manifest)).toBe(false);
   });
 });
 

@@ -25,6 +25,7 @@ import {
 } from "./streams.js";
 import type { DetailRow, PerResourceResult } from "./types.js";
 import type { ContentAnswer } from "./unconfigured.js";
+import { isProtectedUrl } from "./urlcheck.js";
 import { encodeId } from "./utils.js";
 
 /** A GTSubs answer runs to 9 MB of notices; no real listing comes near this. */
@@ -61,6 +62,8 @@ export interface SubtitlesOptions {
   sniff: boolean;
   /** Retry deciding requests once on a transport failure. */
   retry: boolean;
+  /** The addon translates or generates its subtitles on request, so only a file it says is ready may be fetched. */
+  onDemand: boolean;
   log: Logger;
 }
 
@@ -90,6 +93,8 @@ interface Notice {
 interface Entry {
   url: string;
   lang: string;
+  /** Its ID, label, language and URL path, which say whether fetching it would generate it. */
+  wording: string;
 }
 
 /** What a listing's entries amount to: real subtitles, notices standing in for them, and entries Stremio can't use. */
@@ -115,6 +120,16 @@ function isFetchableUrl(url: string): boolean {
   const u = URL.parse(url);
   if (u?.protocol === "data:") return true;
   return (u?.protocol === "http:" || u?.protocol === "https:") && !isUnreachableHost(u.hostname);
+}
+
+function pathOf(url: string): string {
+  const u = URL.parse(url);
+  if (!u || u.protocol === "data:") return "";
+  try {
+    return decodeURIComponent(u.pathname + u.search);
+  } catch {
+    return u.pathname + u.search;
+  }
 }
 
 function fileNameOf(url: string): string {
@@ -147,7 +162,7 @@ export function judgeEntries(subtitles: readonly unknown[]): Entries {
       const shown = label || (isLanguage(lang) ? "" : lang) || file || id;
       notices.push({ placeholder: notice.placeholder, label: shown });
     } else if (isFetchableUrl(url) && isLanguage(lang)) {
-      real.push({ url, lang });
+      real.push({ url, lang, wording: [id, label, lang, pathOf(url)].join(" ") });
     } else {
       unusable++;
     }
@@ -440,6 +455,37 @@ function decodeDataUrl(url: string): { bytes: Uint8Array; contentType?: string }
   }
 }
 
+/** A file translated or generated on request: fetching one can start paid work on the operator's account or, through a configured URL, the lister's own key. */
+const GENERATED =
+  /translat|\b(ai|llm)\b|deepl|gemini|\bgpt|openai|chatgpt|claude|groq|deepseek|machine|on[- _]?demand|generat/i;
+const READY = /\b(ready|cached)\b/i;
+/** Addon names and IDs that say they translate, and descriptions that name a translation service. */
+const TRANSLATING_NAME = /translat|\bai\b|deepl|gemini|\bgpt|openai/i;
+const TRANSLATING_DESCRIPTION =
+  /\b(ai|machine|auto)[- ]?(translat|generat)|\btranslat\w* (with|using|via|by|through) (ai|deepl|gemini|google|openai|chatgpt|gpt|claude|llm)|\b(deepl|gemini|openai|chatgpt|gpt-?\d\w*|claude|llm|groq|deepseek|google translate)\b/i;
+
+/** Whether the addon's manifest says it translates or generates subtitles, whose files a probe must not request. */
+export function translatesSubtitles(manifest: {
+  id?: unknown;
+  name?: unknown;
+  description?: unknown;
+}): boolean {
+  return (
+    TRANSLATING_NAME.test(`${text(manifest.id)} ${text(manifest.name)}`) ||
+    TRANSLATING_DESCRIPTION.test(text(manifest.description))
+  );
+}
+
+/**
+ * Whether a listed file may be fetched: an inline one always, a protected one never, and one generated on request only when it says it is ready.
+ * Skipping a file leaves the listing to decide, so it never makes the addon DOWN.
+ */
+function mayFetch(e: Entry, base: string, onDemand: boolean): boolean {
+  if (e.url.startsWith("data:")) return true;
+  if (isProtectedUrl(e.url, base)) return false;
+  return READY.test(e.wording) || (!onDemand && !GENERATED.test(e.wording));
+}
+
 /** Statuses that may be about the worker's egress rather than the file. */
 const REFUSALS = new Set([401, 403, 429]);
 
@@ -648,7 +694,7 @@ async function fetchListing(
 async function checkTitle(
   base: string,
   t: SubtitleTarget,
-  { sniff, retry }: Pick<SubtitlesOptions, "sniff" | "retry">,
+  { sniff, retry, onDemand }: Pick<SubtitlesOptions, "sniff" | "retry" | "onDemand">,
 ): Promise<TitleCheck> {
   const name = (await releaseNameOf(t.type, t.id)) ?? dotted(t.id);
   const listings = [
@@ -672,7 +718,12 @@ async function checkTitle(
     timedOut: attempts.some((a) => a.timedOut),
   };
   if (best.outcome !== "listed" || !sniff) return check;
-  const { verdict, row } = await sampleFile(best.real[0], URL.parse(base)?.hostname);
+  const entry = best.real.find((e) => mayFetch(e, base, onDemand));
+  if (!entry) {
+    check.details.push({ label: "Note", value: "file not checked: generated on request" });
+    return check;
+  }
+  const { verdict, row } = await sampleFile(entry, URL.parse(base)?.hostname);
   check.details.push(row);
   if (verdict.kind === "notice") {
     return {
@@ -709,7 +760,7 @@ export async function checkSubtitles(
   let retry = options.retry;
   for await (const t of targets) {
     if (titles.length >= options.maxTitles) break;
-    const check = await checkTitle(base, t, { sniff: options.sniff, retry });
+    const check = await checkTitle(base, t, { ...options, retry });
     titles.push(check);
     if (check.timedOut) retry = false;
     options.log.debug(
