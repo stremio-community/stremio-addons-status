@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   classifyStream,
+  isUpsell,
   placeholderKind,
   placeholderMeta,
   repeatedFingerprints,
@@ -225,6 +226,20 @@ describe("placeholderKind", () => {
     ["⚠️ Invalid API key", "needs-config"],
   ])("reads %j as %s", (text, kind) => {
     expect(placeholderKind(text)).toBe(kind);
+  });
+});
+
+describe("isUpsell", () => {
+  it.each([
+    ["FayaTV · ✨ $3/Month • Go Premium", true],
+    ["Upgrade to Premium for 4K", true],
+    ["Start your free trial", true],
+    ["€4.99 / month", true],
+    ["Magyar TV · M4 Sport Teljes hozzáférés aktiválása", false],
+    ["ℹ Kindly configure this addon", false],
+    ["Premium 1080p WEB-DL", false],
+  ])("reads %j as %s", (text, upsell) => {
+    expect(isUpsell(text)).toBe(upsell);
   });
 });
 

@@ -109,6 +109,27 @@ export function placeholderKind(text: string): PlaceholderKind | undefined {
   return PLACEHOLDER_PATTERNS.find(([, re]) => re.test(text))?.[0];
 }
 
+const UPSELL = new RegExp(
+  [
+    String.raw`\bgo premium\b`,
+    String.raw`\bupgrade to (premium|pro|vip)\b`,
+    String.raw`\bpremium access\b`,
+    String.raw`\bfree trial\b`,
+    String.raw`[$€£]\s?\d+([.,]\d+)?\s*\/\s*(mo|month|year)\b`,
+  ].join("|"),
+  "iu",
+);
+
+/** Whether a notice sells a paid tier, which an addon may append to every answer, beside its free streams too. */
+export function isUpsell(text: string): boolean {
+  return UPSELL.test(text);
+}
+
+/** A link asking the user to request a title the addon lacks, which belongs with a notice rather than standing for content. */
+export function isRequestLink(text: string): boolean {
+  return /\b(request|solicit)/iu.test(text);
+}
+
 /** Catalog and meta IDs that name a notice rather than a title, split on the usual separators, with what the notice stands for. */
 const PLACEHOLDER_ID_TOKENS = new Map<string, PlaceholderKind>([
   ["notice", "needs-config"],

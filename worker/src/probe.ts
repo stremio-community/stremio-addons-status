@@ -45,6 +45,8 @@ import {
 import { overrideFor, probeBaseUrl } from "./overrides.js";
 import {
   classifyStream,
+  isRequestLink,
+  isUpsell,
   placeholderMeta,
   repeatedFingerprints,
   strongestPlaceholder,
@@ -529,6 +531,17 @@ function judgedStream(c: StreamClass, repeated: Set<string>, configurable: boole
   return placeholder;
 }
 
+/** A paid-tier upsell beside the addon's free per-title links is noise, unless those links only ask the user to request the title. */
+function upsellsAsNoise(streams: StreamClass[]): StreamClass[] {
+  const real = streams.filter((c) => c.kind === "playable" || c.kind === "link");
+  if (real.length === 0 || real.some((c) => isRequestLink(c.label))) return streams;
+  return streams.map((c) =>
+    c.kind === "placeholder" && c.placeholder === "needs-config" && isUpsell(c.label)
+      ? { ...c, placeholder: "no-content" }
+      : c,
+  );
+}
+
 function judgeStreamFetch(
   f: StreamFetch,
   repeated: Set<string>,
@@ -558,7 +571,7 @@ function judgeStreamFetch(
   if (f.parseError) {
     return { ...failed, summary: describeParseError(f.parseError).summary, details: rows() };
   }
-  const streams = f.streams.map((c) => judgedStream(c, repeated, configurable));
+  const streams = upsellsAsNoise(f.streams.map((c) => judgedStream(c, repeated, configurable)));
   const total = streams.length;
   let playable = streams.filter((c) => c.kind === "playable").length;
   const links = streams.filter((c) => c.kind === "link").length;
@@ -783,10 +796,12 @@ function isAuxiliaryStream(checks: StreamCheckResult[], walks: CatalogWalk[]): b
 
 type SkipReason = "no-episode" | "out-of-scope";
 
-/** The stream checks of one probed type: an advertised movie or series type, or the addon's other stream types together. */
+/** The stream checks of one probed type: an advertised movie or series type, or some of the addon's other stream types. */
 interface TypeProbe {
-  /** Unset for the probe of the addon's other stream types. */
+  /** Unset for a probe of the addon's other stream types. */
   type?: TargetedStreamProbeType;
+  /** The other stream types a probe without `type` covers. */
+  otherTypes: string[];
   fetches: StreamFetch[];
   /** Candidates dropped before a request, and why. */
   notes: DetailRow[];
@@ -802,9 +817,10 @@ interface TypeProbe {
   notCataloged: boolean;
 }
 
-function typeProbe(type?: TargetedStreamProbeType): TypeProbe {
+function typeProbe(type?: TargetedStreamProbeType, otherTypes: string[] = []): TypeProbe {
   return {
     type,
+    otherTypes,
     fetches: [],
     notes: [],
     skips: new Set(),
@@ -815,6 +831,31 @@ function typeProbe(type?: TargetedStreamProbeType): TypeProbe {
     dead: 0,
     notCataloged: false,
   };
+}
+
+function probeKey(uuid: string, p: TypeProbe): string {
+  return `${uuid}/${p.type ?? p.otherTypes.join(",")}`;
+}
+
+/** Probes of the addon's other stream types at most, each with its own request budget. */
+const MAX_OTHER_TYPE_PROBES = 3;
+
+/**
+ * The addon's other stream types, grouped into probes: one per type with a catalog of its own, so the type its catalogs list first can't use up the budget of the rest (sports events before tv channels).
+ * Types without a catalog share a probe, and so do those beyond the bound.
+ */
+function otherTypeGroups(
+  types: readonly string[],
+  cataloged: (type: string) => boolean,
+): string[][] {
+  const rest = types.filter((t) => !cataloged(t));
+  const groups = [...types.filter(cataloged).map((t) => [t]), ...(rest.length > 0 ? [rest] : [])];
+  if (groups.length <= 1) return [[...types]];
+  if (groups.length <= MAX_OTHER_TYPE_PROBES) return groups;
+  return [
+    ...groups.slice(0, MAX_OTHER_TYPE_PROBES - 1),
+    groups.slice(MAX_OTHER_TYPE_PROBES - 1).flat(),
+  ];
 }
 
 /**
@@ -1065,7 +1106,7 @@ async function tryCandidates(
     if (settles(check)) {
       p.settled = true;
       if (check.outcome === "content" && c.origin === "own") {
-        rememberedTargets.set(`${ctx.uuid}/${p.type ?? ""}`, { ...c, origin: "remembered" });
+        rememberedTargets.set(probeKey(ctx.uuid, p), { ...c, origin: "remembered" });
       }
     } else if (check.outcome === "dead" && ++p.dead >= DEAD_TARGETS_PER_TYPE) {
       p.settled = true;
@@ -1481,7 +1522,7 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
     const remembered = (p: TypeProbe) =>
       (async function* (): AsyncGenerator<Candidate> {
         if (ownCatalogsOnly || p.ownTypes.size > 0) return;
-        const c = rememberedTargets.get(`${addon.uuid}/${p.type ?? ""}`);
+        const c = rememberedTargets.get(probeKey(addon.uuid, p));
         if (c) yield { ...c, source: "own catalog, earlier cycle" };
       })();
     const borrowedOf = (accepts: (c: TestContent) => boolean) =>
@@ -1507,7 +1548,9 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
     // Then borrowed titles, and the addon's other stream types when its movie/series side has no titles of its own.
     const ownTypes = new Set(targeted.flatMap((p) => [...p.ownTypes]));
     const ownTargeted = [...ownTypes].some(isTargetedStreamProbeType);
-    const others = ownTargeted ? undefined : typeProbe();
+    const others = ownTargeted
+      ? []
+      : otherTypeGroups(otherStreamTypes, declares).map((types) => typeProbe(undefined, types));
     const borrowFor = (p: TypeProbe) => {
       // Catalogs listing only series show a movie it advertises isn't what it carries (or the other way round).
       if (!declares(p.type!) && !ownTypes.has(p.type!) && ownTargeted) {
@@ -1521,7 +1564,7 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
     };
     const pending = [
       ...targeted.filter((p) => !p.settled && p.fetches.length < MAX_STREAM_REQUESTS_PER_TYPE),
-      ...(others ? [others] : []),
+      ...others,
     ];
     await mapLimit(pending, TYPES_IN_FLIGHT, (p) =>
       tryCandidates(
@@ -1530,15 +1573,15 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
         p.type
           ? borrowFor(p)
           : sequence(
-              curated.filter((c) => otherStreamTypes.includes(c.type)),
-              ownTitles(otherStreamTypes, p.catalogAttempts),
+              curated.filter((c) => p.otherTypes.includes(c.type)),
+              ownTitles(p.otherTypes, p.catalogAttempts),
               remembered(p),
-              borrowedOf((c) => !isTargetedStreamProbeType(c.type)),
+              borrowedOf((c) => p.otherTypes.includes(c.type)),
             ),
       ),
     );
 
-    const probes = [...targeted, ...(others ? [others] : [])];
+    const probes = [...targeted, ...others];
     attempts = uniqueBy(
       probes.flatMap((p) => p.catalogAttempts),
       (a) => a.path,

@@ -1230,6 +1230,40 @@ describe("probe stream content", () => {
     });
   });
 
+  const UPSELL = {
+    name: "FayaTV",
+    title: "✨ $3/Month • Go Premium",
+    externalUrl: "https://payments.faya.test/packages",
+  };
+
+  it("reads an upsell beside a real per-title link as noise (FayaTV)", async () => {
+    const watch = (channel: string) => ({
+      name: "MPD",
+      title: `🌐 ${channel}`,
+      externalUrl: `https://faya.test/watch/${encodeURIComponent(channel)}`,
+    });
+    const r = await probeDual([watch("TNT SPORTS FHD"), UPSELL], [watch("ESPN HD"), UPSELL], {
+      behaviorHints: { configurable: true },
+    });
+    expect(r.success).toBe(true);
+    expect(r.detail.mode).toBe("content");
+    expect(streamOf(r)?.summary).toBe(
+      "movie 0 playable, 1 link of 2 · series 0 playable, 1 link of 2",
+    );
+  });
+
+  it("keeps an upsell beside a request link as needing configuration", async () => {
+    const request = (id: string) => ({
+      name: "REQUEST",
+      title: "Request this title",
+      externalUrl: `https://faya.test/request?id=${id}`,
+    });
+    const r = await probeDual([request("tt0111161"), UPSELL], [request("tt0903747"), UPSELL]);
+    expect(r.success).toBe(true);
+    expect(r.detail.mode).toBe("needs-config");
+    expect(r.detail.configReason).toBe("FayaTV · ✨ $3/Month • Go Premium");
+  });
+
   it("is DOWN when the addon refuses access, whatever links come with the refusal (WLATINO)", async () => {
     const refusal = {
       name: "INFO | WLATINO",
@@ -2973,6 +3007,52 @@ describe("probe catalog order and notices per title", () => {
       "/catalog/series/latanime-latest.json",
       "/catalog/series/animeav1-directory.json",
     ]);
+  });
+
+  it("gives each extra stream type with a catalog of its own a probe, so tv channels are tried after sports events (FayaTV)", async () => {
+    const m = addon({
+      types: ["sports", "tv"],
+      idPrefixes: ["faya"],
+      resources: ["catalog", "stream"],
+      catalogs: [
+        { type: "sports", id: "live-and-upcoming", name: "Live" },
+        { type: "tv", id: "tv_Sports", name: "Sports" },
+      ],
+    });
+    const upsell = {
+      name: "FayaTV",
+      title: "✨ $3/Month • Go Premium",
+      externalUrl: "https://payments.faya.test/packages",
+    };
+    const events = ["faya:se:6rEHzS", "faya:se:r0zxRq", "faya:se:nhKTVu", "faya:se:x4"];
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/catalog/sports/live-and-upcoming.json",
+        {
+          status: 200,
+          data: { metas: events.map((id) => ({ id, type: "sports", name: `Event ${id}` })) },
+        },
+      ],
+      [
+        "/catalog/tv/tv_Sports.json",
+        { status: 200, data: { metas: [{ id: "faya:H62UqG", type: "tv", name: "ESPN HD" }] } },
+      ],
+      ["/stream/sports/", { status: 200, data: { streams: [upsell] } }],
+      [
+        "/stream/tv/faya:H62UqG.json",
+        {
+          status: 200,
+          data: { streams: [{ name: "ESPN HD", url: "http://iptv.test/espn/index.m3u8" }, upsell] },
+        },
+      ],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(r.detail.mode).toBe("content");
+    expect(r.detail.perResource.find((p) => p.resource === "stream")?.summary).toMatch(
+      /tv 1 playable of 2/,
+    );
   });
 
   it("tries the next title when one of its own answers a per-title paywall notice (StremVerse)", async () => {
