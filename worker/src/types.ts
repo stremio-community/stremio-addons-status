@@ -16,7 +16,12 @@ export interface NormalizedAddon {
   instanceOf?: string;
 }
 
-export type ProbeMode = "content" | "liveness-only";
+/**
+ * `content`: resources were deep-checked and decide the verdict.
+ * `liveness-only`: only the manifest was checked (see `skipReason`).
+ * `needs-config`: the addon answers, but asks to be configured before it serves content (see `configReason`); not DOWN.
+ */
+export type ProbeMode = "content" | "liveness-only" | "needs-config";
 
 /** One label/value line explaining how a check was evaluated, shown in the status page's details dialog. */
 export interface DetailRow {
@@ -27,7 +32,7 @@ export interface DetailRow {
 export interface PerResourceResult {
   resource: string;
   ok: boolean;
-  /** Terse verdict (e.g. `movie 3 of 5 valid`), shown as the condition on the status page and in Discord alerts. */
+  /** Terse verdict (e.g. `movie 3 playable of 5`), shown as the condition on the status page and in Discord alerts. */
   summary: string;
   /** How the verdict was reached: the requests made, the routes tried and why it failed. */
   details: DetailRow[];
@@ -41,7 +46,7 @@ export interface ProbeResult {
   error?: string;
   detail: {
     live: boolean;
-    /** Why the liveness floor failed, set only when live is false. */
+    /** The manifest's verdict when the liveness floor failed (e.g. `unreachable (HTTP 502)`), set only when live is false. */
     livenessError?: string;
     /** How the manifest request went; empty when the probe never got that far. */
     manifestDetails: DetailRow[];
@@ -50,7 +55,10 @@ export interface ProbeResult {
     primary?: string;
     /** Why the content tier was skipped, set only in liveness-only mode. */
     skipReason?: string;
+    /** Why the addon needs configuration (e.g. the notice it answered with), set only in needs-config mode. */
+    configReason?: string;
     perResource: PerResourceResult[];
-    streamCounts?: { total: number; valid: number };
+    /** Streams across all stream targets: `playable` play in the player, `links` open a page; placeholders and repeats count in neither. */
+    streamCounts?: { total: number; playable: number; links: number };
   };
 }

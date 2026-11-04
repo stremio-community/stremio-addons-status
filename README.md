@@ -11,6 +11,7 @@ It tracks **every approved addon** on [stremio-addons.net](https://stremio-addon
 We use [our fork of Gatus](https://github.com/Stremio-Community/gatus) for the uptime dashboard plus a small custom-built worker service. The fork is stock [Gatus](https://github.com/TwiN/gatus) with a few patches to its external-endpoint push API (stable endpoint keys and per-probe results) that aren't upstream yet. The worker fetches the addon list, probes each addon, and reports each verdict to Gatus.
 
 Requests go through a Cloudflare WARP proxy first, falling back to a direct connection when WARP is blocked so an addon is only DOWN when it's unreachable from _both_ routes, not because it happens to block one IP or the other.
+The requests that decide the verdict also go direct when WARP answers with nothing usable in them (a soft block), and get one more try after a short pause when neither route answered; a rate limit's short `Retry-After` is waited out before trying again.
 
 In a nutshell:
 

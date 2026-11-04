@@ -1,4 +1,6 @@
 import { afterEach, describe, it, expect, vi } from "vitest";
+import { readFile } from "node:fs/promises";
+import { parse } from "yaml";
 import { buildConditions, buildEndpoints, buildExternalEndpoints, pushResult } from "./gatus.js";
 import type { NormalizedAddon, ProbeResult } from "./types.js";
 
@@ -14,7 +16,7 @@ describe("buildConditions", () => {
       buildConditions(
         verdict({
           live: false,
-          livenessError: "HTTP 502",
+          livenessError: "unreachable (HTTP 502)",
           mode: "content",
           perResource: [],
         }),
@@ -27,6 +29,51 @@ describe("buildConditions", () => {
     expect(
       buildConditions(verdict({ live: false, mode: "content", perResource: [] }), BASE),
     ).toEqual([{ condition: "manifest: unreachable", success: false }]);
+  });
+
+  it("names a manifest that isn't a Stremio manifest as such", () => {
+    expect(
+      buildConditions(
+        verdict({
+          live: false,
+          livenessError: "not a Stremio manifest (missing id, version, name, resources, types)",
+          mode: "content",
+          perResource: [],
+        }),
+        BASE,
+      ),
+    ).toEqual([
+      {
+        condition: "manifest: not a Stremio manifest (missing id, version, name, resources, types)",
+        success: false,
+      },
+    ]);
+  });
+
+  it("adds a failing condition from the message when a DOWN result has none", () => {
+    const down: ProbeResult = {
+      ...verdict({ live: true, mode: "content", primary: "meta", perResource: [] }),
+      success: false,
+      message: "manifest up · meta check failed",
+    };
+    expect(buildConditions(down, BASE)).toEqual([
+      { condition: "manifest: reachable", success: true },
+      { condition: "manifest up · meta check failed", success: false },
+    ]);
+  });
+
+  it("adds nothing to a DOWN result that already carries a failing condition", () => {
+    const down: ProbeResult = {
+      ...verdict({
+        live: false,
+        livenessError: "unreachable (HTTP 502)",
+        mode: "content",
+        perResource: [],
+      }),
+      success: false,
+      message: "manifest unreachable (HTTP 502)",
+    };
+    expect(buildConditions(down, BASE)).toHaveLength(1);
   });
 
   it("explains why the content tier was skipped in liveness-only mode", () => {
@@ -43,6 +90,34 @@ describe("buildConditions", () => {
     ).toEqual([
       { condition: "manifest: reachable", success: true },
       { condition: "content: not deep-checked (configurationRequired)", success: true },
+    ]);
+  });
+
+  it("reports a needs-configuration verdict as passing, with the addon's notice as the reason", () => {
+    expect(
+      buildConditions(
+        verdict({
+          live: true,
+          mode: "needs-config",
+          configReason: "Jackettio · ℹ Kindly configure this addon",
+          perResource: [
+            { resource: "stream", ok: false, summary: "movie 0 playable of 1", details: [] },
+          ],
+        }),
+        BASE,
+      ),
+    ).toEqual([
+      { condition: "manifest: reachable", success: true },
+      {
+        condition: "stream: movie 0 playable of 1 (informational)",
+        success: false,
+        details: [{ label: "Role", value: "informational" }],
+      },
+      {
+        condition: "content: needs configuration",
+        success: true,
+        details: [{ label: "Reason", value: "Jackettio · ℹ Kindly configure this addon" }],
+      },
     ]);
   });
 
@@ -108,7 +183,7 @@ describe("buildConditions", () => {
     const [manifest] = buildConditions(
       verdict({
         live: false,
-        livenessError: `Failed to parse URL from ${BASE}/manifest.json`,
+        livenessError: `unreachable (Failed to parse URL from ${BASE}/manifest.json)`,
         manifestDetails: [
           { label: "Reason", value: `Failed to parse URL from ${BASE}/manifest.json` },
         ],
@@ -123,6 +198,22 @@ describe("buildConditions", () => {
     expect(manifest.details).toEqual([
       { label: "Reason", value: "Failed to parse URL from /manifest.json" },
     ]);
+  });
+
+  it("strips the probed base URL, test config included, before the listed one", () => {
+    const probed = "https://subs.example.org/%7B%22lang%22%3A%22eng%22%7D";
+    const [manifest] = buildConditions(
+      verdict({
+        live: false,
+        livenessError: `unreachable (fetch failed for ${probed}/manifest.json)`,
+        manifestDetails: [],
+        mode: "content",
+        perResource: [],
+      }),
+      "https://subs.example.org",
+      probed,
+    );
+    expect(manifest.condition).toBe("manifest: unreachable (fetch failed for /manifest.json)");
   });
 
   it("trims details to what Gatus accepts instead of losing the push", () => {
@@ -255,6 +346,27 @@ describe("buildExternalEndpoints", () => {
   it("omits the alert description when there is no hostname", () => {
     const [entry] = buildExternalEndpoints(buildEndpoints([addon("not a url")]), true);
     expect(entry.alerts?.[0]).not.toHaveProperty("description");
+  });
+
+  it("alerts on the same thresholds as the static endpoints, so one bad cycle pages nobody", async () => {
+    const base = parse(
+      await readFile(new URL("../../gatus/config.d/00-base.yaml", import.meta.url), "utf8"),
+    ) as { endpoints: Array<{ alerts?: Array<Record<string, unknown>> }> };
+    const thresholds = (alert: Record<string, unknown>) => ({
+      "failure-threshold": alert["failure-threshold"],
+      "success-threshold": alert["success-threshold"],
+    });
+    const staticThresholds = base.endpoints.flatMap((e) => e.alerts ?? []).map(thresholds);
+    const [entry] = buildExternalEndpoints(
+      buildEndpoints([addon("https://aio.example.org/manifest.json")]),
+      true,
+    );
+    expect(thresholds(entry.alerts![0])).toEqual({
+      "failure-threshold": 2,
+      "success-threshold": 1,
+    });
+    expect(staticThresholds).not.toHaveLength(0);
+    for (const t of staticThresholds) expect(t).toEqual(thresholds(entry.alerts![0]));
   });
 
   it("omits alerts when Discord is disabled", () => {

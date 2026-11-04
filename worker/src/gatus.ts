@@ -3,6 +3,7 @@ import { dirname } from "node:path";
 import { stringify } from "yaml";
 import { config, USER_AGENT } from "./config.js";
 import type { DetailRow, NormalizedAddon, ProbeResult } from "./types.js";
+import { probeBaseUrl } from "./overrides.js";
 import { sleep } from "./utils.js";
 
 export interface EndpointDescriptor {
@@ -148,7 +149,7 @@ export function buildExternalEndpoints(
               type: "discord",
               ...(e.hostname ? { description: e.hostname } : {}),
               "send-on-resolved": true,
-              "failure-threshold": 1,
+              "failure-threshold": 2,
               "success-threshold": 1,
             },
           ],
@@ -205,10 +206,17 @@ function truncate(text: string, maxBytes: number): string {
  * The condition strings are shown on the status page and in Discord alerts, so keep them terse and in `resource: verdict` shape.
  * Only the primary resource can flip the verdict, so everything else is tagged as informational -- otherwise a healthy addon carrying a failed secondary check reads as a contradiction.
  * The status page is public and a base URL can carry the addon's config or API key, so every occurrence of it is stripped, leaving paths relative to the base.
+ * The probe may have requested `probedBaseUrl` instead, the base URL plus a curated test config, which is stripped first so the config never shows either.
  */
-export function buildConditions(r: ProbeResult, baseUrl: string): ConditionResult[] {
-  const { live, livenessError, manifestDetails, primary, skipReason, perResource } = r.detail;
-  const redact = (text: string) => (baseUrl ? text.replaceAll(baseUrl, "") : text);
+export function buildConditions(
+  r: ProbeResult,
+  baseUrl: string,
+  probedBaseUrl = baseUrl,
+): ConditionResult[] {
+  const { live, livenessError, manifestDetails, primary, skipReason, configReason, perResource } =
+    r.detail;
+  const redact = (text: string) =>
+    [probedBaseUrl, baseUrl].reduce((t, url) => (url ? t.replaceAll(url, "") : t), text);
   const condition = (
     text: string,
     success: boolean,
@@ -223,9 +231,7 @@ export function buildConditions(r: ProbeResult, baseUrl: string): ConditionResul
 
   const conditions = [
     condition(
-      live
-        ? "manifest: reachable"
-        : `manifest: unreachable${livenessError ? ` (${livenessError})` : ""}`,
+      `manifest: ${live ? "reachable" : (livenessError ?? "unreachable")}`,
       live,
       manifestDetails,
     ),
@@ -241,6 +247,19 @@ export function buildConditions(r: ProbeResult, baseUrl: string): ConditionResul
   }
   if (skipReason) {
     conditions.push(condition(`content: not deep-checked (${skipReason})`, true));
+  }
+  if (r.detail.mode === "needs-config") {
+    conditions.push(
+      condition(
+        "content: needs configuration",
+        true,
+        configReason ? [{ label: "Reason", value: configReason }] : [],
+      ),
+    );
+  }
+  // A red result must say why on the status page and in the alert, even when the probe recorded no failing check.
+  if (!r.success && conditions.every((c) => c.success)) {
+    conditions.push(condition(r.message || "probe failed", false));
   }
   return conditions;
 }
@@ -259,7 +278,10 @@ export async function pushResult(endpoint: EndpointDescriptor, r: ProbeResult): 
   if (endpoint.hostname) params.set("hostname", endpoint.hostname);
   if (endpoint.logo) params.set("logo", endpoint.logo);
   const url = `${config.gatusUrl}/api/v1/endpoints/${endpoint.key}/external?${params.toString()}`;
-  const body = JSON.stringify({ conditionResults: buildConditions(r, endpoint.addon.baseUrl) });
+  const { addon } = endpoint;
+  const body = JSON.stringify({
+    conditionResults: buildConditions(r, addon.baseUrl, probeBaseUrl(addon)),
+  });
   const post = () =>
     fetch(url, {
       method: "POST",

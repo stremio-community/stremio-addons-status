@@ -41,7 +41,7 @@ async function runCycle(): Promise<void> {
         error: "probe",
         detail: {
           live: false,
-          livenessError: `probe error: ${errMsg(e)}`,
+          livenessError: `unreachable (probe error: ${errMsg(e)})`,
           manifestDetails: [],
           mode: "content",
           perResource: [],

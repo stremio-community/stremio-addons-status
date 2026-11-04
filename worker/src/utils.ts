@@ -3,6 +3,10 @@ export function encodeId(id: string): string {
   return encodeURIComponent(id).replace(/%3A/gi, ":");
 }
 
+export function plural(n: number, word: string): string {
+  return `${n} ${word}${n === 1 ? "" : "s"}`;
+}
+
 /** Extract a readable message from an unknown thrown value. */
 export function errMsg(e: unknown): string {
   return e && typeof e === "object" && "message" in e ? String((e as Error).message) : String(e);
