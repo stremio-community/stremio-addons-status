@@ -31,6 +31,7 @@ The point of the worker is to avoid false DOWNs. Preserve these when editing `pr
 - Only the primary resource (`stream` > `catalog` > `meta`) decides UP/DOWN; secondary resources only annotate.
 - An addon is unreachable only when both the WARP proxy and the direct route fail.
 - A missing test ID (e.g. an external ID-source outage) degrades to liveness-only or an annotation, never to DOWN.
+  The exception is an addon whose own catalogs are its only ID source (no external source covers its stream prefixes): when every catalog tried fails or is empty, it is DOWN on its catalogs, since that is what its users browse.
 - A placeholder (a configure plea, a notice, a stream identical for unrelated titles) never counts as content; an addon answering only pleas to configure is needs-config, not DOWN.
 - A configurable addon is needs-config, not DOWN, when its manifest declares required configuration or its primary content routes are missing without a config (`unconfigured.ts`); an empty answer alone never makes it needs-config, and an override's `needsConfig` pin wins over any content verdict.
 
