@@ -215,6 +215,17 @@ describe("placeholderKind", () => {
     expect(placeholderKind("The Shawshank Redemption")).toBeUndefined();
     expect(placeholderKind("")).toBeUndefined();
   });
+
+  it.each([
+    // Subtitle notices: a file name, or the cues of a placeholder file.
+    ["api-disabled.vtt", "error"],
+    ["Postani zmaj supporter · Pristup addonu onemogućen", "error"],
+    ["Sublatino - Error Configura tu API key en el addon: Settings -> Add-ons", "needs-config"],
+    ["apikeyerror.srt", "needs-config"],
+    ["⚠️ Invalid API key", "needs-config"],
+  ])("reads %j as %s", (text, kind) => {
+    expect(placeholderKind(text)).toBe(kind);
+  });
 });
 
 describe("placeholderMeta", () => {

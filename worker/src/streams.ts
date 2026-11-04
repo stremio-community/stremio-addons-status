@@ -50,7 +50,8 @@ const PLACEHOLDER_PATTERNS: ReadonlyArray<readonly [PlaceholderKind, RegExp]> = 
         String.raw`\b(token|key|session|manifest|license|account)s? (has )?(expired|ended)\b`,
         String.raw`\bunauthori[sz]ed\b|\bnot authori[sz]ed\b|\bno autorizad|\bnão autorizad`,
         String.raw`\baccess denied\b|\bacces(so)? (blocat|denegado|negado)\b`,
-        String.raw`\b(addon|service|account|access|instance) (is |has been )?disabled\b`,
+        String.raw`\b(addon|service|account|access|instance|api)[ _-](is |has been )?disabled\b`,
+        String.raw`\bonemogu[cć]en`,
         String.raw`\brequest failed\b|\bauth(entication)? error\b`,
         String.raw`\brate[ -]?limit`,
         String.raw`\btoo many requests\b`,
@@ -202,7 +203,7 @@ function hasValue(v: unknown): boolean {
 }
 
 /** Loopback, private, link-local and documentation hosts: no client outside the addon's own machine can reach them. */
-function isUnreachableHost(hostname: string): boolean {
+export function isUnreachableHost(hostname: string): boolean {
   const host = hostname.replace(/^\[|\]$/g, "").toLowerCase();
   if (host === "localhost" || host.endsWith(".localhost") || host === "0.0.0.0") return true;
   if (/^(www\.)?example\.(com|org|net)$/.test(host)) return true;
