@@ -342,9 +342,9 @@ interface Ranked {
 
 /**
  * Every matching source's IDs, best fit first and without duplicates; sources sharing a rank take turns within each type.
- * With `retype`, each ID takes the resource's spelling of its type and is dropped where the resource wouldn't accept it.
+ * Each ID takes the resource's spelling of its type and is dropped where the resource wouldn't accept it.
  */
-async function rankedFor(res: NormResource, retype: boolean): Promise<Ranked[]> {
+async function rankedFor(res: NormResource): Promise<Ranked[]> {
   const lists = await Promise.all(
     matchingSources(res.idPrefixes).map(async (source) => {
       const contents = await source.resolve(res).catch((e: unknown): TestContent[] => {
@@ -352,11 +352,8 @@ async function rankedFor(res: NormResource, retype: boolean): Promise<Ranked[]> 
         return [];
       });
       const items = contents.flatMap((c): TestContent[] => {
-        const type = retype
-          ? res.types.find((t) => t.toLowerCase() === c.type.toLowerCase())
-          : c.type;
-        if (type === undefined) return [];
-        if (retype && !resourceAccepts(res, type, c.episodeId ?? c.id)) return [];
+        const type = res.types.find((t) => t.toLowerCase() === c.type.toLowerCase());
+        if (type === undefined || !resourceAccepts(res, type, c.episodeId ?? c.id)) return [];
         return [{ ...c, type, source: source.name }];
       });
       return { rank: source.rank(res), items };
@@ -383,15 +380,6 @@ async function rankedFor(res: NormResource, retype: boolean): Promise<Ranked[]> 
 }
 
 /**
- * Test content for prefixes alone, typed as each source names it.
- * @deprecated Use candidatesFor, which also honours the resource's types.
- */
-export async function resolveForPrefixes(idPrefixes: readonly string[]): Promise<TestContent[]> {
-  const res: NormResource = { name: "stream", types: [], idPrefixes: [...idPrefixes] };
-  return (await rankedFor(res, false)).map((r) => r.content);
-}
-
-/**
  * Ordered test IDs for a stream or subtitles resource, best fit first, from every source whose prefixes and types the resource accepts.
  * Callers try them in order and stop at the first that yields content, so later entries cost nothing for a healthy addon.
  * Types take turns, the best-fitting first, so each advertised type gets an early candidate.
@@ -400,7 +388,7 @@ export async function candidatesFor(res: NormResource): Promise<TestContent[]> {
   if (!hasSourceFor(res.idPrefixes)) return [];
   const queues = new Map<string, Ranked[]>();
   const perSource = new Map<string, number>();
-  for (const r of await rankedFor(res, true)) {
+  for (const r of await rankedFor(res)) {
     const queue = queues.get(r.content.type) ?? [];
     const sourceKey = `${r.content.type}\n${r.content.source}`;
     const fromSource = perSource.get(sourceKey) ?? 0;

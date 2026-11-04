@@ -10,8 +10,7 @@ const getJson = vi.fn(async (url: string) => {
 });
 vi.mock("./http.js", () => ({ getJson: (url: string) => getJson(url) }));
 
-const { candidatesFor, hasSourceFor, resetCycle, resolveForPrefixes } =
-  await import("./idsources.js");
+const { candidatesFor, hasSourceFor, resetCycle } = await import("./idsources.js");
 const { config } = await import("./config.js");
 
 const CINEMETA = "https://v3-cinemeta.strem.io";
@@ -272,13 +271,5 @@ describe("candidatesFor", () => {
     resetCycle(HEAD + config.probeInterval);
     await candidatesFor(res(["series"], ["tt"]));
     expect(getJson.mock.calls.length).toBeGreaterThan(calls);
-  });
-});
-
-describe("resolveForPrefixes", () => {
-  it("returns every matching source's IDs in their own types", async () => {
-    const cs = await resolveForPrefixes(["tt", "kitsu"]);
-    expect(cs[0]).toMatchObject({ type: "series", id: "kitsu:7442", source: "kitsu" });
-    expect(cs.some((c) => c.source === "well-known" && c.type === "movie")).toBe(true);
   });
 });
