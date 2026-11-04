@@ -628,6 +628,20 @@ describe("checkSubtitles", () => {
     expect(c?.result).toMatchObject({ ok: true, summary: "movie 0 found (3 titles)" });
   });
 
+  it("goes down when the titles its override names list only files no client can reach (yifysubtitles)", async () => {
+    const local = (n: number) =>
+      Array.from({ length: n }, (_, i) => ({
+        id: String(i),
+        lang: "eng",
+        url: `http://127.0.0.1:3000/${i}.srt`,
+      }));
+    h.listings.set(INCEPTION_EXTRA, subs(local(147)));
+    h.listings.set(INCEPTION_BARE, subs([]));
+    const c = await checkSubtitles(BASE, [{ ...INCEPTION, curated: true }], options);
+    expect(c?.verdict).toEqual({ kind: "down" });
+    expect(c?.result.summary).toBe("movie 147 unusable");
+  });
+
   it("goes down when it answers nothing for the titles its override says it carries", async () => {
     h.listings.set(INCEPTION_EXTRA, subs([]));
     h.listings.set(INCEPTION_BARE, subs([]));

@@ -185,11 +185,11 @@ function entriesOf(data: SubtitlesResponse | undefined): Entries | undefined {
 }
 
 /** Ranked so the better of a title's two requests is the one shown. */
-type ListingOutcome = "failed" | "unusable" | "empty" | "notices" | "listed";
+type ListingOutcome = "failed" | "empty" | "unusable" | "notices" | "listed";
 const LISTING_RANK: Record<ListingOutcome, number> = {
   failed: 0,
-  unusable: 1,
-  empty: 2,
+  empty: 1,
+  unusable: 2,
   notices: 3,
   listed: 4,
 };
@@ -645,11 +645,11 @@ function listingPath(t: SubtitleTarget, fileName?: string): string {
   return `/subtitles/${encodeId(t.type)}/${encodeId(t.id)}${extra}.json`;
 }
 
-type TitleOutcome = "failed" | "unusable" | "empty" | "bad-file" | "notices" | "passed";
+type TitleOutcome = "failed" | "empty" | "unusable" | "bad-file" | "notices" | "passed";
 const TITLE_RANK: Record<TitleOutcome, number> = {
   failed: 0,
-  unusable: 1,
-  empty: 2,
+  empty: 1,
+  unusable: 2,
   "bad-file": 3,
   notices: 4,
   passed: 5,
@@ -790,7 +790,7 @@ export async function checkSubtitles(
       value: "no subtitles for any title tried; a niche provider may lack them",
     });
   }
-  if (verdict.kind === "down" && titles.some((c) => c.target.curated && c.outcome === "empty")) {
+  if (verdict.kind === "down" && titles.some((c) => c.target.curated)) {
     details.push({
       label: "Note",
       value: "no subtitles for the titles its override says it carries",
@@ -822,9 +822,6 @@ function subtitlesVerdict(titles: TitleCheck[]): SubtitlesVerdict {
   if (titles.some((c) => c.outcome === "bad-file")) return { kind: "down" };
   const empty = titles.filter((c) => c.outcome === "empty");
   if (empty.length === 0) return { kind: "down" };
-  const curated = titles.filter((c) => c.target.curated);
-  if (curated.length > 0 && curated.every((c) => c.outcome === "empty" || c.outcome === "failed")) {
-    return { kind: "down" };
-  }
+  if (titles.some((c) => c.target.curated)) return { kind: "down" };
   return { kind: "empty" };
 }
