@@ -4,6 +4,7 @@ import type { NormalizedAddon } from "./types.js";
 import type { TestContent } from "./idsources.js";
 import type { Attempt, GetJsonOptions, ParseError, Route } from "./http.js";
 import type { NormResource } from "./manifest.js";
+import type { LinkPage, UrlCheck, UrlToCheck } from "./urlcheck.js";
 
 // --- mocks -----------------------------------------------------------------
 
@@ -15,6 +16,7 @@ type RouteResult = {
   /** Replaces the single direct attempt the mock reports by default. */
   attempts?: Attempt[];
   softBlockedOn?: Route;
+  allowOrigin?: string;
 };
 let router: (url: string, options: GetJsonOptions<unknown>) => RouteResult | Promise<RouteResult>;
 /** The options of every getJson call, by URL. */
@@ -50,6 +52,25 @@ vi.mock("./http.js", async (importOriginal) => ({
       ],
     };
   },
+}));
+
+const PLAYS = (u: UrlToCheck): UrlCheck => ({
+  host: new URL(u.url).hostname,
+  verdict: "playable",
+  outcome: "HTTP 206 video/mp4",
+});
+const urlcheckMock = {
+  checkUrl: async (u: UrlToCheck): Promise<UrlCheck> => PLAYS(u),
+  followLink: async (url: string): Promise<LinkPage> => ({
+    host: new URL(url).hostname,
+    status: 200,
+  }),
+};
+
+vi.mock("./urlcheck.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./urlcheck.js")>()),
+  checkUrl: (u: UrlToCheck) => urlcheckMock.checkUrl(u),
+  followLink: (url: string) => urlcheckMock.followLink(url),
 }));
 
 vi.mock("./idsources.js", () => ({
@@ -109,7 +130,7 @@ function routes(map: Array<[string, RouteResult | (() => never)]>): (url: string
   };
 }
 
-const manifestOk = (m: Manifest): RouteResult => ({ status: 200, data: m });
+const manifestOk = (m: Manifest): RouteResult => ({ status: 200, data: m, allowOrigin: "*" });
 
 /** What getJson reports for an HTML page served with HTTP 200, e.g. an unconfigured addon's landing page. */
 const HTML_PAGE: RouteResult = {
@@ -125,6 +146,8 @@ const HTML_PAGE: RouteResult = {
 
 beforeEach(() => {
   subtitleFiles.clear();
+  urlcheckMock.checkUrl = async (u) => PLAYS(u);
+  urlcheckMock.followLink = async (url) => ({ host: new URL(url).hostname, status: 200 });
   idsourcesMock.hasSourceFor = () => false;
   idsourcesMock.candidatesFor = async () => [];
   forgetRememberedTargets();
@@ -314,7 +337,10 @@ describe("probe", () => {
     const r = await probe(m);
     expect(r.success).toBe(true);
     expect(r.message).toContain("stream: series 1 playable of 1");
-    expect(r.message).toContain("meta: valid");
+    expect(r.detail.perResource.find((x) => x.resource === "meta")).toMatchObject({
+      ok: false,
+      summary: "no videos",
+    });
     expect(metaCalls).toBe(1);
   });
 
@@ -941,6 +967,96 @@ describe("probe detail rows", () => {
     ]);
   });
 
+  it("says a meta came back without its wrapper (Nickelodeon)", async () => {
+    const m = addon({
+      types: ["movie"],
+      idPrefixes: ["tmdb"],
+      resources: ["catalog", "meta"],
+      catalogs: [{ type: "movie", id: "nickelodeon_movies", name: "Nickelodeon" }],
+    });
+    const preview = { id: "tmdb:980431", type: "movie", name: "Avatar Aang: The Last Airbender" };
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      ["/catalog/movie/nickelodeon_movies.json", { status: 200, data: { metas: [preview] } }],
+      ["/meta/movie/tmdb:980431.json", { status: 200, data: { ...preview, genres: ["Kids"] } }],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    const meta = r.detail.perResource.find((p) => p.resource === "meta");
+    expect(meta).toMatchObject({ ok: false, summary: "invalid (meta not wrapped)" });
+    expect(meta?.details).toContainEqual({
+      label: "Reason",
+      value: 'meta returned without the {"meta": …} wrapper',
+    });
+  });
+
+  it("flags a stub meta for another ID without failing the catalog addon (Holiday Movies & Shows)", async () => {
+    const m = addon({
+      types: ["movie"],
+      idPrefixes: ["tmdb"],
+      resources: ["catalog", "meta"],
+      catalogs: [{ type: "movie", id: "holiday_movies", name: "Holiday Movies" }],
+    });
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/catalog/movie/holiday_movies.json",
+        {
+          status: 200,
+          data: { metas: [{ id: "tmdb:1273221", type: "movie", name: "Scary Movie" }] },
+        },
+      ],
+      [
+        "/meta/movie/tmdb:1273221.json",
+        {
+          status: 200,
+          data: {
+            meta: {
+              id: "tmdb:1273221.json",
+              type: "movie",
+              name: "Loading...",
+              posterShape: "poster",
+            },
+          },
+        },
+      ],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    const meta = r.detail.perResource.find((p) => p.resource === "meta");
+    expect(meta).toMatchObject({ ok: false, summary: "id mismatch" });
+    expect(meta?.details).toContainEqual({
+      label: "Reason",
+      value: "meta id tmdb:1273221.json for request tmdb:1273221",
+    });
+  });
+
+  it("keeps a meta-primary addon UP when its meta is only flawed, naming the flaw", async () => {
+    const m = addon({
+      types: ["series"],
+      resources: [{ name: "meta", types: ["series"], idPrefixes: ["tt"] }],
+    });
+    overrides.u = { testIds: [{ type: "series", id: "tt0944947" }] };
+    try {
+      router = routes([
+        ["/manifest.json", manifestOk(m.manifest)],
+        [
+          "/meta/series/tt0944947.json",
+          { status: 200, data: { meta: { id: "tt0944947", type: "series", name: "GoT" } } },
+        ],
+      ]);
+      const r = await probe(m);
+      expect(r.success).toBe(true);
+      expect(r.detail.primary).toBe("meta");
+      expect(r.detail.perResource.find((p) => p.resource === "meta")).toMatchObject({
+        ok: true,
+        summary: "valid · no videos",
+      });
+    } finally {
+      delete overrides.u;
+    }
+  });
+
   it("explains an empty catalog whose metas lack required fields", async () => {
     const m = addon({
       types: ["movie"],
@@ -954,11 +1070,29 @@ describe("probe detail rows", () => {
     const r = await probe(m);
     const catalog = r.detail.perResource.find((p) => p.resource === "catalog");
     expect(r.success).toBe(false);
-    expect(catalog?.summary).toBe("empty");
+    expect(catalog?.summary).toBe("invalid (1 meta without type, name)");
     expect(catalog?.details.at(-1)).toEqual({
       label: "Reason",
       value: "none of 1 metas has an id, type and name",
     });
+  });
+
+  it("calls a catalog of metas without names invalid, not empty (TorrentFreaks Top-10)", async () => {
+    const m = addon({
+      types: ["movie"],
+      resources: ["catalog"],
+      catalogs: [{ type: "movie", id: "torrentfreak-movies", name: "TorrentFreak" }],
+    });
+    const metas = Array.from({ length: 100 }, (_, i) => ({ type: "movie", id: `tt${1000 + i}` }));
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      ["/catalog/movie/torrentfreak-movies.json", { status: 200, data: { metas } }],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(false);
+    expect(r.detail.perResource.find((p) => p.resource === "catalog")?.summary).toBe(
+      "invalid (100 metas without name)",
+    );
   });
 });
 
@@ -1181,8 +1315,15 @@ describe("probe stream content", () => {
       url: "https://status.test/torrentio",
     };
     overrides.u = { name: "Stremio Status", sameStreamsForEveryTitle: "a status board" };
+    // Its cards open status pages, which aren't media and aren't meant to be.
+    let checked = 0;
+    urlcheckMock.checkUrl = async (u) => {
+      checked++;
+      return { host: new URL(u.url).hostname, verdict: "webpage", outcome: "HTTP 200 text/html" };
+    };
     try {
       const r = await probeDual([card], [card], { behaviorHints: { configurable: true } });
+      expect(checked).toBe(0);
       expect(r.success).toBe(true);
       expect(r.detail.mode).toBe("content");
     } finally {
@@ -2123,7 +2264,9 @@ describe("probe own catalogs as the ID source", () => {
     ]);
     const down = await probe(m);
     expect(down.success).toBe(false);
-    expect(down.message).toBe("manifest up · catalog: movie empty (3 tries)");
+    expect(down.message).toBe(
+      "manifest up · catalog: movie empty (3 tries) · catalogs: 0 of 4 OK · a empty, b empty, c empty, d empty",
+    );
 
     router = routes([
       ["/manifest.json", manifestOk(m.manifest)],
@@ -2549,6 +2692,178 @@ describe("probe several titles per type", () => {
   });
 });
 
+describe("probe catalog coverage", () => {
+  it("checks the series catalog a catalog addon's movie catalog passed without (Cartoon Network)", async () => {
+    const m = addon({
+      types: ["movie", "series"],
+      idPrefixes: ["tmdb"],
+      resources: ["catalog"],
+      catalogs: [
+        { type: "movie", id: "cartoon_network_movie", name: "Cartoon Network" },
+        { type: "series", id: "cartoon_network_series", name: "Cartoon Network" },
+      ],
+    });
+    const series = Array.from({ length: 20 }, (_, i) => ({
+      id: `tmdb:${15260 + i}`,
+      type: "series",
+      poster: "https://image.tmdb.org/t/p/w500/x.jpg",
+    }));
+    let movieRequests = 0;
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/catalog/movie/cartoon_network_movie.json",
+        () => {
+          movieRequests++;
+          return {
+            status: 200,
+            data: {
+              metas: [{ id: "tmdb:16000", type: "movie", name: "Ben 10: Race Against Time" }],
+            },
+          } as never;
+        },
+      ],
+      ["/catalog/series/cartoon_network_series.json", { status: 200, data: { metas: series } }],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(r.detail.perResource.map((p) => p.resource)).toEqual(["catalog", "catalogs"]);
+    expect(r.detail.perResource[1]).toMatchObject({
+      ok: false,
+      summary: "1 of 2 OK · cartoon_network_series without name",
+    });
+    expect(movieRequests).toBe(1);
+  });
+
+  it("names a stream addon's broken sibling catalogs without changing its verdict (OnlyPorn)", async () => {
+    const ids = ["eporner", "spankbang", "missav", "xhamster.hd+", "xhamster.4k"];
+    const m = addon({
+      types: ["movie"],
+      resources: ["catalog", "stream"],
+      catalogs: ids.map((id) => ({ type: "movie", id, name: id })),
+    });
+    const titled = (n: number) =>
+      Array.from({ length: n }, (_, i) => ({ id: `ep:${i}`, type: "movie", name: `T${i}` }));
+    const nameless = Array.from({ length: 39 }, (_, i) => ({ id: `xh:${i}`, type: "movie" }));
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      ["/catalog/movie/eporner.json", { status: 200, data: { metas: titled(65) } }],
+      ["/catalog/movie/spankbang.json", { status: 200, data: { metas: [] } }],
+      ["/catalog/movie/missav.json", { status: 200, data: { metas: [] } }],
+      [
+        "/catalog/movie/xhamster.hd%2B.json",
+        { status: 200, data: { metas: [...titled(12), ...nameless] } },
+      ],
+      ["/stream/movie/ep:0.json", { status: 200, data: { streams: [PLAYABLE] } }],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(r.detail.primary).toBe("stream");
+    expect(r.detail.perResource.find((p) => p.resource === "catalogs")).toMatchObject({
+      ok: false,
+      summary: "1 of 4 OK · spankbang empty, missav empty, xhamster.hd+ without name",
+    });
+  });
+
+  it("leaves search-only catalogs out", async () => {
+    const m = addon({
+      types: ["movie"],
+      resources: ["catalog"],
+      catalogs: [
+        { type: "movie", id: "top", name: "Top" },
+        {
+          type: "movie",
+          id: "search",
+          name: "Search",
+          extra: [{ name: "search", isRequired: true }],
+        },
+      ],
+    });
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/catalog/movie/top.json",
+        { status: 200, data: { metas: [{ id: "x:1", type: "movie", name: "X" }] } },
+      ],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(r.detail.perResource.map((p) => p.resource)).toEqual(["catalog"]);
+  });
+});
+
+describe("probe addon catalogs", () => {
+  /** stremio-addons.net's manifest, trimmed. */
+  const listing = () =>
+    addon({
+      id: "community.stremio.stremio-addons-dot-net",
+      types: ["movie", "series", "channel", "tv"],
+      resources: ["addon_catalog"],
+      catalogs: [],
+      addonCatalogs: [{ type: "all", id: "stremio-addons.net", name: "stremio-addons.net" }],
+    });
+  const entry = {
+    transportUrl: "https://brazuca.test/manifest.json",
+    transportName: "http",
+    manifest: { id: "community.brazuca-play", name: "Brazuca Play", version: "1.0.0" },
+  };
+
+  it("content-checks an addon whose only resource is addon_catalog (stremio-addons.net)", async () => {
+    const m = listing();
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/addon_catalog/all/stremio-addons.net.json",
+        { status: 200, data: { addons: Array.from({ length: 750 }, () => entry) } },
+      ],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(r.detail.mode).toBe("content");
+    expect(r.detail.primary).toBe("addon_catalog");
+    expect(r.message).toBe("addon_catalog: 750 addons");
+    expect(requestOptions.get(`${BASE}/addon_catalog/all/stremio-addons.net.json`)).toMatchObject({
+      retry: true,
+    });
+  });
+
+  it("is DOWN when the addon catalog lists no addons", async () => {
+    const m = listing();
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      ["/addon_catalog/all/stremio-addons.net.json", { status: 200, data: { addons: [] } }],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(false);
+    expect(r.error).toBe("addon_catalog");
+    expect(r.message).toBe("manifest up · addon_catalog: empty");
+  });
+
+  it("only annotates an addon catalog next to a primary resource", async () => {
+    const m = addon({
+      types: ["movie"],
+      resources: ["catalog", "addon_catalog"],
+      catalogs: [{ type: "movie", id: "top", name: "Top" }],
+      addonCatalogs: [{ type: "all", id: "mine", name: "Mine" }],
+    });
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/catalog/movie/top.json",
+        { status: 200, data: { metas: [{ id: "x:1", type: "movie", name: "X" }] } },
+      ],
+      ["/addon_catalog/all/mine.json", { status: 404, data: undefined }],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(r.detail.primary).toBe("catalog");
+    expect(r.detail.perResource.find((p) => p.resource === "addon_catalog")).toMatchObject({
+      ok: false,
+      summary: "HTTP 404",
+    });
+  });
+});
+
 describe("probe catalog order and notices per title", () => {
   it("alternates catalog sources, so one failing backend doesn't use up every try (Latanime)", async () => {
     const m = addon({
@@ -2585,7 +2900,7 @@ describe("probe catalog order and notices per title", () => {
     };
     const r = await probe(m);
     expect(r.success).toBe(true);
-    expect(catalogRequests).toEqual([
+    expect(catalogRequests.slice(0, 2)).toEqual([
       "/catalog/series/latanime-latest.json",
       "/catalog/series/animeav1-directory.json",
     ]);
@@ -2749,7 +3064,10 @@ describe("probe transport", () => {
       ["/stream/movie/tt0111161.json", { status: 200, data: { streams: [PLAYABLE] } }],
     ]);
     await probe(m);
-    expect(requestOptions.get(`${BASE}/manifest.json`)).toEqual({ retry: true });
+    expect(requestOptions.get(`${BASE}/manifest.json`)).toEqual({
+      retry: true,
+      headers: { Origin: "https://web.stremio.com" },
+    });
   });
 
   it("reports a manifest rate limited on every try as rate limited (Torrentio instance)", async () => {
@@ -3102,6 +3420,385 @@ describe("probe transport", () => {
     expect(r.detail.perResource.find((p) => p.resource === "catalog")?.summary).toBe(
       "1 metas · slow (17 s)",
     );
+  });
+});
+
+describe("probe CORS", () => {
+  const scraper = () => {
+    idsourcesMock.hasSourceFor = () => true;
+    idsourcesMock.candidatesFor = async () => [{ type: "movie", id: "tt0111161" }];
+    return addon({
+      types: ["movie"],
+      resources: [{ name: "stream", types: ["movie"], idPrefixes: ["tt"] }],
+    });
+  };
+
+  it("annotates a manifest Stremio Web can't read without changing the verdict (Cinemata Remover)", async () => {
+    const m = scraper();
+    router = routes([
+      ["/manifest.json", { status: 200, data: m.manifest }],
+      ["/stream/movie/tt0111161.json", { status: 200, data: { streams: [PLAYABLE] } }],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(r.detail.primary).toBe("stream");
+    expect(r.detail.perResource.find((x) => x.resource === "cors")).toMatchObject({
+      ok: false,
+      summary: "missing, fails in Stremio Web",
+    });
+  });
+
+  it("annotates an addon that needs configuration too (Cast List)", async () => {
+    const m = addon({
+      types: ["movie"],
+      resources: ["stream"],
+      behaviorHints: { configurable: true, configurationRequired: true },
+    });
+    router = routes([["/manifest.json", { status: 200, data: m.manifest }]]);
+    const r = await probe(m);
+    expect(r.detail.mode).toBe("needs-config");
+    expect(r.detail.perResource.map((x) => x.resource)).toEqual(["cors"]);
+  });
+
+  it("says nothing when the manifest allows Stremio Web's origin", async () => {
+    const m = scraper();
+    router = routes([
+      ["/manifest.json", { status: 200, data: m.manifest, allowOrigin: "https://web.stremio.com" }],
+      ["/stream/movie/tt0111161.json", { status: 200, data: { streams: [PLAYABLE] } }],
+    ]);
+    const r = await probe(m);
+    expect(r.detail.perResource.map((x) => x.resource)).not.toContain("cors");
+  });
+});
+
+describe("probe stream URL checks", () => {
+  /** A live-TV addon whose own catalog lists `channels`, each answering `streamsOf(id)`. */
+  async function probeTv(
+    channels: string[],
+    streamsOf: (id: string) => unknown[],
+    extra: Array<[string, RouteResult]> = [],
+  ) {
+    const m = addon({
+      types: ["tv"],
+      resources: ["catalog", "stream"],
+      catalogs: [{ type: "tv", id: "channels", name: "Channels" }],
+    });
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/catalog/tv/channels.json",
+        { status: 200, data: { metas: channels.map((id) => ({ id, type: "tv", name: id })) } },
+      ],
+      ...extra,
+      ...channels.map((id): [string, RouteResult] => [
+        `/stream/tv/${id}.json`,
+        { status: 200, data: { streams: streamsOf(id) } },
+      ]),
+    ]);
+    return probe(m);
+  }
+
+  const streamOf = (r: Awaited<ReturnType<typeof probe>>) =>
+    r.detail.perResource.find((p) => p.resource === "stream");
+  const verdictOf =
+    (verdicts: Record<string, Omit<UrlCheck, "host">>) =>
+    async (u: UrlToCheck): Promise<UrlCheck> => ({
+      host: new URL(u.url).hostname,
+      ...(verdicts[new URL(u.url).hostname] ?? { verdict: "playable", outcome: "HTTP 206" }),
+    });
+  const NXDOMAIN = { verdict: "dead", outcome: "NXDOMAIN" } as const;
+  const GEO = { verdict: "unverifiable", outcome: "HTTP 403 text/html, blocked" } as const;
+
+  it("is DOWN when every checked stream URL is dead, naming hosts but never the URL (FTV Channels)", async () => {
+    const checked: UrlToCheck[] = [];
+    urlcheckMock.checkUrl = async (u) => {
+      checked.push(u);
+      return verdictOf({ "fash1.erosnow.test": NXDOMAIN })(u);
+    };
+    const hls = (id: string, q: string) => ({
+      name: "FTV Paris",
+      title: q,
+      url: `https://fash1.erosnow.test/slive/${id}_${q}/chunklist.m3u8?token=secret`,
+    });
+    const r = await probeTv(["ftv_paris", "ftv_midnight"], (id) =>
+      ["1080p", "720p", "480p"].map((q) => hls(id, q)),
+    );
+    expect(r.success).toBe(false);
+    expect(r.error).toBe("stream");
+    expect(streamOf(r)?.summary).toBe("tv 2 of 2 URLs dead (2 IDs)");
+    expect(r.detail.streamCounts?.playable).toBe(0);
+    expect(streamOf(r)?.details).toContainEqual({
+      label: "Reason",
+      value:
+        "no checked stream URL plays: fash1.erosnow.test NXDOMAIN; fash1.erosnow.test NXDOMAIN",
+    });
+    expect(streamOf(r)?.details).toContainEqual({
+      label: "URL check",
+      value: "2 dead of 2 · fash1.erosnow.test: NXDOMAIN; fash1.erosnow.test: NXDOMAIN",
+    });
+    // Only the first two URLs of each title, and a second title before giving up.
+    expect(checked).toHaveLength(4);
+    expect(JSON.stringify(r)).not.toContain("secret");
+  });
+
+  it("tries another title when one title's URLs are dead, and passes on one that plays (a removed file)", async () => {
+    urlcheckMock.checkUrl = verdictOf({ "gone.test": { verdict: "dead", outcome: "HTTP 404" } });
+    const r = await probeTv(["a", "b"], (id) => [
+      { title: id, url: `https://${id === "a" ? "gone" : "cdn"}.test/${id}.m3u8` },
+    ]);
+    expect(r.success).toBe(true);
+    expect(streamOf(r)?.summary).toBe("tv 1 playable of 1");
+    expect(streamOf(r)?.details).toContainEqual({
+      label: "URL check",
+      value: "1 playable of 1 · cdn.test: HTTP 206",
+    });
+  });
+
+  it("stays UP when the checked URL is geo-blocked or rate limited, which may play elsewhere (Israeli TV)", async () => {
+    urlcheckMock.checkUrl = verdictOf({ "cloudfront.test": GEO });
+    const r = await probeTv(["iltv_5goldil"], () => [
+      { title: "5Gold", url: "https://cloudfront.test/live/playlist.m3u8" },
+    ]);
+    expect(r.success).toBe(true);
+    expect(streamOf(r)?.details).toContainEqual({
+      label: "URL check",
+      value: "1 unverifiable of 1 · cloudfront.test: HTTP 403 text/html, blocked",
+    });
+  });
+
+  it("passes an informational addon whose stream URLs all open web pages as a link addon (Stremio Stinger)", async () => {
+    urlcheckMock.checkUrl = async (u) => ({
+      host: new URL(u.url).hostname,
+      verdict: "webpage",
+      outcome: "HTTP 200 text/html, web page",
+    });
+    const r = await probeTv(["a"], () => [
+      { name: "🍿 Mid & Post-Credits Scenes", url: "https://aftercredits.test/2019/04/a/" },
+    ]);
+    expect(r.success).toBe(true);
+    expect(streamOf(r)?.summary).toBe("tv 1 of 1 URLs web pages");
+    expect(streamOf(r)?.details).toContainEqual({
+      label: "Note",
+      value: "link addon: links only, not content-checked",
+    });
+  });
+
+  it("is DOWN when stream URLs are web pages beside a dead host (StreamPlay's embeds)", async () => {
+    urlcheckMock.checkUrl = verdictOf({
+      "vidlink.test": { verdict: "webpage", outcome: "HTTP 200 text/html, web page" },
+      "vidsrc.test": NXDOMAIN,
+    });
+    const r = await probeTv(["a", "b"], (id) => [
+      { name: "Vidlink", url: `https://vidlink.test/movie/${id}` },
+      { name: "Vidsrc", url: `https://vidsrc.test/embed/movie/${id}` },
+    ]);
+    expect(r.success).toBe(false);
+    expect(streamOf(r)?.summary).toBe("tv no URL plays (2 IDs)");
+  });
+
+  it("does not check torrents or debrid links, which a dead URL beside them couldn't fail", async () => {
+    let calls = 0;
+    urlcheckMock.checkUrl = async (u) => {
+      calls++;
+      return { host: new URL(u.url).hostname, ...NXDOMAIN };
+    };
+    const r = await probeTv(["a"], () => [
+      { title: "web", url: "https://gone.test/a.mp4" },
+      { title: "torrent", infoHash: "a".repeat(40) },
+    ]);
+    expect(r.success).toBe(true);
+    expect(calls).toBe(0);
+  });
+
+  it("is DOWN when playable streams are dead, even with links beside them (Ultrapelis)", async () => {
+    urlcheckMock.checkUrl = verdictOf({
+      "archive.test": { verdict: "dead", outcome: "HTTP 403 text/html, gone" },
+    });
+    const m = addon({
+      types: ["movie", "series"],
+      resources: [{ name: "stream", types: ["movie", "series"], idPrefixes: ["tt"] }],
+    });
+    idsourcesMock.hasSourceFor = () => true;
+    idsourcesMock.candidatesFor = async () => [
+      { type: "movie", id: "tt0111161" },
+      { type: "series", id: "tt0903747", episodeId: "tt0903747:1:1" },
+    ];
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/stream/movie/tt0111161.json",
+        {
+          status: 200,
+          data: {
+            streams: [{ name: "Servidor principal", externalUrl: "https://vimeos.test/e/1" }],
+          },
+        },
+      ],
+      [
+        "/stream/series/tt0903747:1:1.json",
+        {
+          status: 200,
+          data: {
+            streams: [
+              { name: "Servidor alterno", externalUrl: "https://myvidplay.test/e/2" },
+              { name: "Archive", url: "https://archive.test/serve/item/e1.mp4" },
+            ],
+          },
+        },
+      ],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(false);
+    expect(streamOf(r)?.summary).toBe("movie 0 playable, 1 link of 1 · series 1 of 1 URLs dead");
+  });
+
+  describe("negative control", () => {
+    const embeds = (kind: string, id: string) => [
+      { name: "[StreamPlay] Vidlink 1080p", url: `https://vidlink.test/${kind}/${id}` },
+      { name: "[StreamPlay] Server Vidsrc", url: `https://vidsrc.test/embed/${kind}/${id}` },
+      { name: "[StreamPlay] AutoEmbed Fast", url: `https://autoembed.test/embed/${kind}/${id}` },
+    ];
+    /** A catalog-less addon answering every `tt` ID with `streamsOf`, the nonexistent one included. */
+    async function probeTemplated(streamsOf: (type: string, id: string) => unknown[] | undefined) {
+      const m = addon({
+        types: ["movie", "series"],
+        resources: [{ name: "stream", types: ["movie", "series"], idPrefixes: ["tt"] }],
+      });
+      idsourcesMock.hasSourceFor = () => true;
+      idsourcesMock.candidatesFor = async () => [
+        { type: "movie", id: "tt0111161" },
+        { type: "series", id: "tt0903747", episodeId: "tt0903747:1:1" },
+      ];
+      const asked: string[] = [];
+      router = (url) => {
+        if (url.endsWith("/manifest.json")) return manifestOk(m.manifest);
+        const match = /\/stream\/(\w+)\/([^/]+)\.json$/.exec(url);
+        if (!match) throw new Error(`no route for ${url}`);
+        asked.push(match[2]);
+        const streams = streamsOf(match[1], match[2]);
+        return streams ? { status: 200, data: { streams } } : { status: 404, data: undefined };
+      };
+      return { r: await probe(m), asked };
+    }
+
+    it("is DOWN when an addon answers a nonexistent ID with stream URLs and none of them plays (StreamPlay)", async () => {
+      urlcheckMock.checkUrl = verdictOf({
+        "vidlink.test": GEO,
+        "vidsrc.test": { verdict: "unverifiable", outcome: "timed out" },
+      });
+      const { r, asked } = await probeTemplated((type, id) =>
+        embeds(type === "series" ? "tv" : "movie", id),
+      );
+      expect(asked.filter((id) => id.startsWith("tt9999999999"))).toEqual(["tt9999999999"]);
+      expect(r.success).toBe(false);
+      expect(streamOf(r)?.summary).toBe(
+        "movie templated, no URL plays · series templated, no URL plays",
+      );
+      expect(streamOf(r)?.details).toContainEqual({
+        label: "Note",
+        value: "templated: the nonexistent tt9999999999 gets 3 streams too",
+      });
+    });
+
+    it("passes a templating addon whose checked URL plays", async () => {
+      urlcheckMock.checkUrl = verdictOf({ "vidsrc.test": GEO });
+      const { r } = await probeTemplated((type, id) => embeds(type, id));
+      expect(r.success).toBe(true);
+    });
+
+    it("trusts unverifiable URLs of an addon that answers nothing for a nonexistent ID", async () => {
+      urlcheckMock.checkUrl = verdictOf({ "vidlink.test": GEO, "vidsrc.test": GEO });
+      const { r, asked } = await probeTemplated((type, id) =>
+        id.startsWith("tt9999999999") ? [] : embeds(type, id),
+      );
+      expect(asked).toContain("tt9999999999");
+      expect(r.success).toBe(true);
+    });
+
+    it("does not take a static card the real title got too for a template (Flix-Streams upsell)", async () => {
+      urlcheckMock.checkUrl = verdictOf({ "vidlink.test": GEO, "vidsrc.test": GEO });
+      const upsell = {
+        name: "FlixNest",
+        title: "Need more sources? Open Flix-Streams",
+        externalUrl: "https://flix.test/",
+      };
+      const { r } = await probeTemplated((type, id) =>
+        id.startsWith("tt9999999999") ? [upsell] : [...embeds(type, id), upsell],
+      );
+      expect(r.success).toBe(true);
+    });
+
+    it("annotates templated links, and opens one to read what its page says (MoviesInDetail)", async () => {
+      const opened: string[] = [];
+      urlcheckMock.followLink = async (url) => {
+        opened.push(url);
+        return {
+          host: "moviesindetail.test",
+          status: 200,
+          label: "Movies in Detail – One place for trailers, images, soundtracks & reviews",
+        };
+      };
+      const { r } = await probeTemplated((_type, id) => [
+        {
+          name: "MoviesInDetail",
+          title: `Open ${id} in MoviesInDetail`,
+          externalUrl: `https://moviesindetail.test/?q=${id}`,
+        },
+      ]);
+      expect(r.success).toBe(true);
+      expect(r.detail.mode).toBe("content");
+      expect(opened).toHaveLength(2);
+      expect(streamOf(r)?.summary).toBe(
+        "movie 0 playable, 1 link of 1 · series 0 playable, 1 link of 1 · templated links",
+      );
+      expect(streamOf(r)?.details).toContainEqual({
+        label: "Note",
+        value: "link addon: templated links (not content-checked)",
+      });
+      expect(streamOf(r)?.details).toContainEqual({
+        label: "Link check",
+        value:
+          "moviesindetail.test · HTTP 200 · Movies in Detail – One place for trailers, images, soundtracks & reviews",
+      });
+    });
+
+    it("reports a templated link whose page asks for an API key as needing configuration (Content Deep Dive Companion)", async () => {
+      // A popular title's deep dive is cached, so only the other title's page asks for a key.
+      urlcheckMock.followLink = async (url) =>
+        url.includes("tt0111161")
+          ? { host: "deepdive.test", status: 200, label: "Deep Dive: The Shawshank Redemption" }
+          : {
+              host: "deepdive.test",
+              status: 200,
+              label: "API Key Required - Content Deep Dive",
+              placeholder: "needs-config",
+            };
+      const { r } = await probeTemplated((_type, id) => [
+        {
+          name: "🔍 Deep Dive Analysis",
+          description: "Open detailed content analysis in browser",
+          externalUrl: `https://deepdive.test/deep_dive/${id}`,
+        },
+      ]);
+      expect(r.success).toBe(true);
+      expect(r.detail.mode).toBe("needs-config");
+      expect(r.detail.configReason).toBe("API Key Required - Content Deep Dive");
+    });
+
+    it("does not open the links of an addon that answers nothing for a nonexistent ID (IMDb ratings)", async () => {
+      let opened = 0;
+      urlcheckMock.followLink = async (url) => {
+        opened++;
+        return { host: new URL(url).hostname, status: 200 };
+      };
+      const { r } = await probeTemplated((_type, id) =>
+        id.startsWith("tt9999999999")
+          ? undefined
+          : [{ name: "IMDb Rating", externalUrl: `https://imdb.test/title/${id}/` }],
+      );
+      expect(r.success).toBe(true);
+      expect(opened).toBe(0);
+    });
   });
 });
 

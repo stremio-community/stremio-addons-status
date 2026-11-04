@@ -16,7 +16,21 @@ import {
   type ParseError,
 } from "./http.js";
 import { alsoTriedRow, answerTime, describeTestId, requestRows } from "./rows.js";
-import { encodeId, errMsg } from "./utils.js";
+import { encodeId, errMsg, plural } from "./utils.js";
+import { corsAnnotation, STREMIO_WEB_HEADERS } from "./cors.js";
+import {
+  catalogCoverage,
+  coveragePicks,
+  hasInstallableAddon,
+  judgeAddonCatalog,
+} from "./catalogs.js";
+import {
+  metaBodyDefect,
+  metaDefects,
+  metaFlaws,
+  metasWithout,
+  missingMetaFields,
+} from "./metas.js";
 import { candidatesFor, hasSourceFor, type TestContent } from "./idsources.js";
 import { logger, type Logger } from "./logger.js";
 import {
@@ -38,6 +52,16 @@ import {
 } from "./streams.js";
 import { checkSubtitles, subtitleTargets } from "./subtitles.js";
 import { unconfiguredReason, type ContentAnswer } from "./unconfigured.js";
+import {
+  checkUrl,
+  describeUrlChecks,
+  followLink,
+  isProtectedUrl,
+  negativeControlId,
+  urlsToCheck,
+  type LinkPage,
+  type UrlCheck,
+} from "./urlcheck.js";
 import type { DetailRow, NormalizedAddon, PerResourceResult, ProbeResult } from "./types.js";
 
 /** Stream requests per probed type: enough to get past titles the addon happens to lack, few enough to look like one user browsing. */
@@ -53,6 +77,10 @@ const MAX_UNANSWERED_STREAM_REQUESTS = 2;
 /** Distinctive titles for search-only catalogs: some search backends match nothing for a common word like "the". */
 const SEARCH_TERMS = ["batman", "naruto", "love"];
 const CINEMETA = "https://v3-cinemeta.strem.io";
+/** Targets per probed type whose stream URLs all proved dead before the type stops trying further titles. */
+const DEAD_TARGETS_PER_TYPE = 2;
+/** The negative control only asks whether the addon answers at all, which a templating addon does at once. */
+const NEGATIVE_CONTROL_TIMEOUT_MS = 10_000;
 /** A deciding request slower than this still works, but keeps a user waiting long enough to say so. */
 const SLOW_MS = 10_000;
 /** Titles a subtitles-only addon is asked for: a movie and a series where it advertises both, and one more. */
@@ -67,13 +95,6 @@ interface MetaResponse {
 }
 interface StreamResponse {
   streams?: unknown[];
-}
-
-const META_REQUIRED_FIELDS = ["id", "type", "name"] as const;
-
-function missingMetaFields(m: unknown): string[] {
-  const o = m as Record<string, unknown> | undefined;
-  return META_REQUIRED_FIELDS.filter((f) => typeof o?.[f] !== "string");
 }
 
 function isOkStatus(status: number): boolean {
@@ -137,6 +158,7 @@ interface StreamTarget extends Candidate {
 
 /** One catalog request and what it offered to test with. */
 interface CatalogAttempt {
+  catalog: ManifestCatalog;
   /** The catalog's declared type. */
   type: string;
   path: string;
@@ -150,6 +172,8 @@ interface CatalogAttempt {
   notice?: MetaNotice;
   /** Unset when the request threw. */
   answer?: ContentAnswer;
+  /** The metas a parsed 2xx answer listed, and those lacking a required field. */
+  metas?: { total: number; invalid: number; missing: string[] };
 }
 
 /** A catalog the worker can query, with the requests to try in order: each later one runs only when the previous came back empty. */
@@ -158,6 +182,8 @@ interface CatalogPlan {
   paths: string[];
   /** Catalogs needing no user input come first. */
   rank: number;
+  /** A search-only catalog, whose answer depends on the term as much as on the addon. */
+  search: boolean;
 }
 
 function extraPair(name: string, value: string): string {
@@ -197,6 +223,7 @@ function catalogPlan(catalog: ManifestCatalog): CatalogPlan | null {
     catalog,
     paths: variants.map((v) => `${base}${v.length > 0 ? `/${v.join("&")}` : ""}.json`),
     rank: required.size === 0 ? 0 : 1,
+    search: required.has("search"),
   };
 }
 
@@ -232,7 +259,7 @@ async function fetchCatalog(
   path: string,
   options: GetJsonOptions<CatalogResponse>,
 ): Promise<CatalogAttempt> {
-  const attempt = { type: catalog.type, path, items: [] as Candidate[] };
+  const attempt = { catalog, type: catalog.type, path, items: [] as Candidate[] };
   try {
     const result = await getJson<CatalogResponse>(base + path, config.timeouts.catalog, options);
     const { status, data, parseError, attempts } = result;
@@ -259,16 +286,21 @@ async function fetchCatalog(
     }
     const metas = Array.isArray(data?.metas) ? data.metas : [];
     const valid = metas.filter((m) => missingMetaFields(m).length === 0);
+    const { invalid, missing } = metaDefects(metas);
+    const counted = { ...answered, metas: { total: metas.length, invalid, missing } };
     if (valid.length === 0) {
       const reason =
         metas.length === 0
           ? "returned no metas"
           : `none of ${metas.length} metas has an id, type and name`;
       return {
-        ...answered,
+        ...counted,
         kind: "empty",
         ok: false,
-        summary: "empty",
+        summary:
+          metas.length === 0
+            ? "empty"
+            : `invalid (${metasWithout(invalid, metas.length, missing)})`,
         details: requestRows(path, attempts, { reason, note }),
       };
     }
@@ -276,7 +308,7 @@ async function fetchCatalog(
     if (real.length === 0) {
       const notice = strongestPlaceholder(valid.map((m) => placeholderMeta(m)!))!;
       return {
-        ...answered,
+        ...counted,
         kind: "notices",
         // A catalog of donation or news tiles still answers; it only has nothing to test with.
         ok: notice.placeholder === "no-content",
@@ -286,7 +318,7 @@ async function fetchCatalog(
       };
     }
     return {
-      ...answered,
+      ...counted,
       kind: "items",
       ok: true,
       summary: `${metas.length} metas`,
@@ -417,20 +449,45 @@ interface StreamFetch {
   parseError?: ParseError;
   /** Unset when the request threw. */
   answer?: JsonResult<StreamResponse>;
+  verification?: Verification;
 }
 
-type Placeholder = Extract<StreamClass, { kind: "placeholder" }> & { repeated?: boolean };
+/** An addon answering an ID no title can have with streams: it pastes the ID into a template rather than looking anything up. */
+interface Templated {
+  /** The nonexistent ID asked for. */
+  id: string;
+  /** Its answer's playable `url` streams and links, leaving out static cards the real title got too. */
+  urls: number;
+  links: number;
+}
+
+/** What the worker learned about a target's streams beyond the answer itself. */
+interface Verification {
+  /** The checked stream URLs, set when every playable stream is a URL the worker may request. */
+  urls?: UrlCheck[];
+  templated?: Templated;
+  /** The page behind the target's first link, opened when the addon templates its links. */
+  linkPage?: LinkPage;
+}
+
+/** `linkPage`: read from the page a templated link opens rather than from the stream itself. */
+type Placeholder = Extract<StreamClass, { kind: "placeholder" }> & {
+  repeated?: boolean;
+  linkPage?: boolean;
+};
 
 /**
  * `content`: at least one real playable stream.
  * `links`: no playable stream, but real links (externalUrl, trailers).
+ * `dead`: playable streams whose checked URLs can't play: all dead, or templated and none proved playable.
  * `placeholder`: notices only, or links beside a notice saying the addon is broken or unconfigured, which are its request forms and configure links.
  * `empty`: nothing usable; `failed`: no 2xx answer.
  */
-type StreamOutcome = "content" | "links" | "placeholder" | "empty" | "failed";
+type StreamOutcome = "content" | "dead" | "links" | "placeholder" | "empty" | "failed";
 
 const OUTCOME_RANK: Record<StreamOutcome, number> = {
-  content: 4,
+  content: 5,
+  dead: 4,
   links: 3,
   placeholder: 2,
   empty: 1,
@@ -467,10 +524,6 @@ function judgedStream(c: StreamClass, repeated: Set<string>, configurable: boole
   return placeholder;
 }
 
-function plural(n: number, word: string): string {
-  return `${n} ${word}${n === 1 ? "" : "s"}`;
-}
-
 function judgeStreamFetch(
   f: StreamFetch,
   repeated: Set<string>,
@@ -502,12 +555,16 @@ function judgeStreamFetch(
   }
   const streams = f.streams.map((c) => judgedStream(c, repeated, configurable));
   const total = streams.length;
-  const playable = streams.filter((c) => c.kind === "playable").length;
+  let playable = streams.filter((c) => c.kind === "playable").length;
   const links = streams.filter((c) => c.kind === "link").length;
-  const notice = strongestPlaceholder(
-    streams.filter((c): c is Placeholder => c.kind === "placeholder"),
-  );
-  const outcome: StreamOutcome =
+  const v = f.verification;
+  const pageNotice = links > 0 && playable === 0 ? linkPageNotice(v?.linkPage) : undefined;
+  let notice = strongestPlaceholder([
+    ...streams.filter((c): c is Placeholder => c.kind === "placeholder"),
+    ...(pageNotice ? [pageNotice] : []),
+  ]);
+  const checked = playable > 0 ? urlOutcome(v) : undefined;
+  let outcome: StreamOutcome =
     playable > 0
       ? "content"
       : notice && notice.placeholder !== "no-content"
@@ -517,8 +574,19 @@ function judgeStreamFetch(
           : notice
             ? "placeholder"
             : "empty";
-  const reason =
-    outcome === "links"
+  let summary =
+    total === 0
+      ? "no streams"
+      : `${playable} playable${links > 0 ? `, ${plural(links, "link")}` : ""} of ${total}`;
+  if (checked) {
+    outcome = checked.outcome;
+    summary = checked.summary;
+    playable = 0;
+    notice = undefined;
+  }
+  const reason = checked
+    ? checked.reason
+    : outcome === "links"
       ? "only links, no playable stream"
       : outcome === "placeholder"
         ? noticeReason(notice!)
@@ -527,10 +595,6 @@ function judgeStreamFetch(
             ? "returned no streams"
             : `none of ${total} streams has a playable source`
           : undefined;
-  const summary =
-    total === 0
-      ? "no streams"
-      : `${playable} playable${links > 0 ? `, ${plural(links, "link")}` : ""} of ${total}`;
   return {
     target: f.target,
     path: f.path,
@@ -540,9 +604,86 @@ function judgeStreamFetch(
     links,
     notice,
     summary,
-    details: rows(reason),
+    details: [...rows(reason), ...verificationRows(v)],
     answeredInMs,
   };
+}
+
+/**
+ * What a target's checked URLs make of its playable streams, when none of them plays.
+ * Web pages alone are an informational addon's links (Stremio Stinger); beside a dead URL they are as unplayable.
+ */
+function urlOutcome(
+  v: Verification | undefined,
+): { outcome: "dead" | "links"; summary: string; reason: string } | undefined {
+  const urls = v?.urls;
+  if (!urls?.length || urls.some((u) => u.verdict === "playable")) return undefined;
+  const each = urls.map((u) => `${u.host} ${u.outcome}`).join("; ");
+  const dead = urls.filter((u) => u.verdict === "dead").length;
+  const pages = urls.filter((u) => u.verdict === "webpage").length;
+  if (dead + pages === urls.length) {
+    if (dead === 0) {
+      return {
+        outcome: "links",
+        summary: `${pages} of ${urls.length} URLs web pages`,
+        reason: `stream URLs open web pages, not media: ${each}`,
+      };
+    }
+    return {
+      outcome: "dead",
+      summary: pages === 0 ? `${dead} of ${urls.length} URLs dead` : "no URL plays",
+      reason: `no checked stream URL plays: ${each}`,
+    };
+  }
+  // A template answers for any ID, so only a URL that plays shows this title is real.
+  if (v?.templated?.urls) {
+    return {
+      outcome: "dead",
+      summary: "templated, no URL plays",
+      reason: `the addon answers a nonexistent ID too, and no checked stream URL plays: ${each}`,
+    };
+  }
+  return undefined;
+}
+
+/** A linked page that says it needs configuration or is broken, read as the notice it is. */
+function linkPageNotice(page: LinkPage | undefined): Placeholder | undefined {
+  if (!page?.placeholder || page.placeholder === "no-content") return undefined;
+  return {
+    kind: "placeholder",
+    placeholder: page.placeholder,
+    fingerprint: "",
+    label: page.label ?? page.host,
+    linkPage: true,
+  };
+}
+
+function verificationRows(v: Verification | undefined): DetailRow[] {
+  if (!v) return [];
+  const { urls, templated, linkPage } = v;
+  return [
+    ...(urls?.length ? [{ label: "URL check", value: describeUrlChecks(urls) }] : []),
+    ...(templated
+      ? [
+          {
+            label: "Note",
+            value: `templated: the nonexistent ${templated.id} gets ${plural(templated.urls + templated.links, "stream")} too`,
+          },
+        ]
+      : []),
+    ...(linkPage
+      ? [
+          {
+            label: "Link check",
+            value: [
+              linkPage.host,
+              linkPage.status !== undefined ? `HTTP ${linkPage.status}` : "no answer",
+              ...(linkPage.label ? [linkPage.label] : []),
+            ].join(" · "),
+          },
+        ]
+      : []),
+  ];
 }
 
 function noticeReason(notice: Placeholder): string {
@@ -589,11 +730,18 @@ type StreamVerdict =
   { kind: "content" | "links" | "down" } | { kind: "needs-config" | "error"; reason: string };
 
 /**
- * Any target with real content passes; an addon answering only real links is a link/info addon and passes too.
+ * Any target with real content passes; an addon answering only real links is a link/info addon and passes too, unless its playable streams proved dead.
  * Otherwise its notices decide: an error notice is DOWN with the notice as the reason, a plea to configure is needs-config.
  */
 function streamVerdict(checks: StreamCheckResult[]): StreamVerdict {
   if (checks.some((c) => c.outcome === "content")) return { kind: "content" };
+  // Streams meant to play that can't outweigh links that only open a browser.
+  if (checks.some((c) => c.outcome === "dead")) return { kind: "down" };
+  // A templated link's page shows what any title gets, though a popular one may be cached.
+  const page = strongestPlaceholder(checks.flatMap((c) => (c.notice?.linkPage ? c.notice : [])));
+  if (page?.placeholder === "needs-config" || page?.placeholder === "error") {
+    return { kind: page.placeholder, reason: page.label };
+  }
   if (checks.some((c) => c.outcome === "links")) return { kind: "links" };
   const notice = strongestPlaceholder(checks.flatMap((c) => c.notice ?? []));
   if (notice?.placeholder === "error") return { kind: "error", reason: notice.label };
@@ -643,6 +791,8 @@ interface TypeProbe {
   ownTypes: Set<string>;
   examined: number;
   settled: boolean;
+  /** Targets whose stream URLs proved dead. */
+  dead: number;
   /** Not borrowed for, because the addon's own catalogs show other types only. */
   notCataloged: boolean;
 }
@@ -657,6 +807,7 @@ function typeProbe(type?: TargetedStreamProbeType): TypeProbe {
     ownTypes: new Set(),
     examined: 0,
     settled: false,
+    dead: 0,
     notCataloged: false,
   };
 }
@@ -690,6 +841,8 @@ interface ProbeContext {
   unanswered: number;
   /** Set once a stream request timed out on any route: retrying later ones would mostly double the wait on an addon that hangs. */
   streamTimedOut: boolean;
+  /** Asked at most once per probe, of the first target that needs it. */
+  negativeControl(f: StreamFetch): Promise<Templated | undefined>;
 }
 
 /** Fetch each key once, sharing the pending answer with every later caller. */
@@ -780,6 +933,85 @@ async function fetchStream(ctx: ProbeContext, target: StreamTarget): Promise<Str
 
 const NO_REPEATS = new Set<string>();
 
+/** Request streams for an ID shaped like the target's that no title has, and keep what the answer shares with a real one. */
+async function askNegativeControl(
+  ctx: Pick<ProbeContext, "base" | "streamRes" | "log">,
+  f: StreamFetch,
+): Promise<Templated | undefined> {
+  const id = negativeControlId(f.target.streamId, effectivePrefixes(ctx.streamRes));
+  const path = `/stream/${encodeId(f.target.type)}/${encodeId(id)}.json`;
+  try {
+    const { status, data } = await getJson<StreamResponse>(
+      ctx.base + path,
+      NEGATIVE_CONTROL_TIMEOUT_MS,
+    );
+    const raw = isOkStatus(status) && Array.isArray(data?.streams) ? data.streams : [];
+    // A nag or donation card the real title got too is a static card, not a template.
+    const known = new Set(f.streams.map((c) => c.fingerprint));
+    const real = raw.filter((s) => {
+      const c = classifyStream(s, { baseUrl: ctx.base });
+      return (c.kind === "playable" || c.kind === "link") && !known.has(c.fingerprint);
+    });
+    const urls = real.filter((s) => typeof (s as { url?: unknown }).url === "string").length;
+    const links = real.length - urls;
+    ctx.log.debug({ step: "negative-control", id, status, urls, links }, "negative control");
+    return real.length > 0 ? { id, urls, links } : undefined;
+  } catch (e) {
+    ctx.log.debug({ step: "negative-control", id, err: errMsg(e) }, "negative control failed");
+    return undefined;
+  }
+}
+
+/**
+ * Check what a target's streams lead to: its first stream URLs, and, when that can't settle it, whether the addon templates its answers.
+ * A templating addon's links are opened once, so a page saying "API key required" reads as the notice it is.
+ */
+async function verifyStreams(
+  ctx: ProbeContext,
+  f: StreamFetch,
+  outcome: "content" | "links",
+): Promise<Verification> {
+  // Status cards are the same for every title by design, and lead to status pages rather than media.
+  if (ctx.sameStreamsForEveryTitle) return {};
+  const raw = f.answer?.data?.streams ?? [];
+  const playable = raw.filter((_, i) => f.streams[i]?.kind === "playable");
+  const toCheck = outcome === "content" ? urlsToCheck(playable, ctx.base) : [];
+  const urls = await Promise.all(toCheck.map((u) => checkUrl(u)));
+  const settledByUrls =
+    urls.length === 0 ||
+    urls.some((u) => u.verdict === "playable") ||
+    !urls.some((u) => u.verdict === "unverifiable");
+  const templated =
+    outcome === "content" && settledByUrls ? undefined : await ctx.negativeControl(f);
+  const link =
+    outcome === "links" && templated?.links
+      ? raw.find((s, i) => f.streams[i]?.kind === "link" && isWebLink(s))
+      : undefined;
+  const linkUrl = (link as { externalUrl?: string } | undefined)?.externalUrl;
+  const linkPage =
+    linkUrl && !isProtectedUrl(linkUrl, ctx.base) ? await followLink(linkUrl) : undefined;
+  ctx.log.debug(
+    {
+      step: "verify",
+      id: f.id,
+      urls: urls.map((u) => `${u.host} ${u.verdict}`),
+      templated: templated !== undefined,
+      linkPage: linkPage?.placeholder,
+    },
+    "stream verification",
+  );
+  return {
+    ...(urls.length > 0 ? { urls } : {}),
+    ...(templated ? { templated } : {}),
+    ...(linkPage ? { linkPage } : {}),
+  };
+}
+
+function isWebLink(s: unknown): boolean {
+  const link = (s as { externalUrl?: unknown } | null)?.externalUrl;
+  return typeof link === "string" && /^https?:\/\//i.test(link);
+}
+
 /** Request streams for candidates in order until one settles how the addon fares, within the type's request budget. */
 async function tryCandidates(
   ctx: ProbeContext,
@@ -810,7 +1042,11 @@ async function tryCandidates(
     p.fetches.push(f);
     if (f.status === undefined) ctx.unanswered++;
     if (f.attempts.some((a) => a.timedOut)) ctx.streamTimedOut = true;
-    const check = judgeStreamFetch(f, NO_REPEATS, ctx.configurable);
+    let check = judgeStreamFetch(f, NO_REPEATS, ctx.configurable);
+    if (check.outcome === "content" || check.outcome === "links") {
+      f.verification = await verifyStreams(ctx, f, check.outcome);
+      check = judgeStreamFetch(f, NO_REPEATS, ctx.configurable);
+    }
     ctx.log.debug(
       {
         step: "stream",
@@ -826,6 +1062,8 @@ async function tryCandidates(
       if (check.outcome === "content" && c.origin === "own") {
         rememberedTargets.set(`${ctx.uuid}/${p.type ?? ""}`, { ...c, origin: "remembered" });
       }
+    } else if (check.outcome === "dead" && ++p.dead >= DEAD_TARGETS_PER_TYPE) {
+      p.settled = true;
     }
     if (exhausted()) return;
   }
@@ -854,6 +1092,79 @@ async function* catalogItems(
     }
     if (attempt?.notice && attempt.notice.placeholder !== "no-content") return;
     yield* (attempt?.items ?? []).filter((item) => accepts(item.type)).slice(0, ITEMS_PER_CATALOG);
+  }
+}
+
+/** Each catalog a user browses that the probe hasn't fetched yet, within the coverage budget, with every request made for it. */
+async function coverCatalogs(
+  fetch: CatalogFetcher,
+  plans: CatalogPlan[],
+  fetched: CatalogAttempt[],
+): Promise<CatalogAttempt[]> {
+  const browsable = plans.filter((p) => !p.search);
+  const keys = new Set(browsable.map((p) => `${p.catalog.type}/${p.catalog.id}`));
+  const covered = fetched.filter((a) => keys.has(`${a.catalog.type}/${a.catalog.id}`));
+  const picks = coveragePicks(
+    browsable,
+    (p) => p.catalog,
+    covered.map((a) => a.catalog),
+  );
+  const fresh = await mapLimit(picks, TYPES_IN_FLIGHT, async (plan) => {
+    const made: CatalogAttempt[] = [];
+    for (const path of plan.paths) {
+      const attempt = await fetch(plan, path);
+      made.push(attempt);
+      if (attempt.kind !== "empty") break;
+    }
+    return made;
+  });
+  return [...covered, ...fresh.flat()];
+}
+
+/** The first addon catalog's answer: it passes when it lists an addon Stremio could install. */
+async function checkAddonCatalog(
+  base: string,
+  catalog: ManifestCatalog,
+  decides: boolean,
+): Promise<{ result: PerResourceResult; answer?: ContentAnswer; deciding?: Timing }> {
+  const path = `/addon_catalog/${encodeId(catalog.type)}/${encodeId(catalog.id)}.json`;
+  try {
+    const answer = await getJson<unknown>(
+      base + path,
+      config.timeouts.catalog,
+      decides ? deciding(hasInstallableAddon) : {},
+    );
+    const { status, parseError, attempts } = answer;
+    const unparsed = isOkStatus(status) ? parseError : undefined;
+    const judged = !isOkStatus(status)
+      ? { ok: false, ...describeStatus(answer) }
+      : unparsed
+        ? { ok: false, ...describeParseError(unparsed) }
+        : judgeAddonCatalog(answer.data);
+    return {
+      answer,
+      result: {
+        resource: "addon_catalog",
+        ok: judged.ok,
+        summary: judged.summary,
+        details: requestRows(path, attempts, {
+          reason: judged.reason,
+          parseError: unparsed,
+          note: softBlockNote(answer),
+        }),
+      },
+      ...(judged.ok ? { deciding: { path, ms: answerTime(answer) } } : {}),
+    };
+  } catch (e) {
+    const { summary, reason } = describeRequestError(e);
+    return {
+      result: {
+        resource: "addon_catalog",
+        ok: false,
+        summary,
+        details: requestRows(path, attemptsOf(e), { reason }),
+      },
+    };
   }
 }
 
@@ -958,6 +1269,7 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
   try {
     const answer = await getJson<unknown>(base + manifestPath, config.timeouts.manifest, {
       retry: true,
+      headers: STREMIO_WEB_HEADERS,
     });
     const { status, data, parseError, attempts } = answer;
     if (!isOkStatus(status)) {
@@ -986,6 +1298,8 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
     }
     live = data as Manifest;
     manifestAttempts = attempts;
+    const cors = corsAnnotation(manifestPath, answer.allowOrigin);
+    if (cors) perResource.push(cors);
     manifestDetails = requestRows(manifestPath, attempts);
     if (override?.testConfig) {
       manifestDetails.push({ label: "Note", value: "probed with a public test config" });
@@ -1037,19 +1351,24 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
   const streamRes = norm.find((r) => r.name === "stream");
   const metaRes = norm.find((r) => r.name === "meta");
   const subtitlesRes = norm.find((r) => r.name === "subtitles");
+  const addonCatalogs = Array.isArray(live.addonCatalogs)
+    ? live.addonCatalogs.filter((c) => typeof c?.type === "string" && typeof c.id === "string")
+    : [];
   // Stremio reads catalogs from `manifest.catalogs` alone, whether or not `resources` lists `catalog`.
   const plans = catalogPlans(catalogs);
 
-  // Primary content resource: stream > catalog > meta > subtitles.
-  let primary: "stream" | "catalog" | "meta" | "subtitles" | null = streamRes
+  // Primary content resource: stream > catalog > meta > addon_catalog > subtitles.
+  let primary: "stream" | "catalog" | "meta" | "addon_catalog" | "subtitles" | null = streamRes
     ? "stream"
     : catalogs.length > 0
       ? "catalog"
       : metaRes
         ? "meta"
-        : subtitlesRes
-          ? "subtitles"
-          : null;
+        : addonCatalogs.length > 0
+          ? "addon_catalog"
+          : subtitlesRes
+            ? "subtitles"
+            : null;
 
   if (!primary) return livenessOnly("no testable resource");
   log.debug({ step: "discovery", primary, catalogs: plans.length }, `primary resource: ${primary}`);
@@ -1090,6 +1409,7 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
     const advertised = advertisedStreamProbeTypes(streamRes.types);
     const otherStreamTypes = streamRes.types.filter((t) => !isTargetedStreamProbeType(t));
     let borrowed: Promise<TestContent[]> | undefined;
+    let negative: Promise<Templated | undefined> | undefined;
     const ctx: ProbeContext = {
       uuid: addon.uuid,
       base,
@@ -1108,6 +1428,7 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
       requested: new Set(),
       unanswered: 0,
       streamTimedOut: false,
+      negativeControl: (f) => (negative ??= askNegativeControl(ctx, f)),
     };
 
     const declares = (type: string) => plans.some((plan) => sameType(plan.catalog.type, type));
@@ -1289,8 +1610,16 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
       }
       const streamDetails = rows.flatMap((row) => row.details);
       streamDeciding = rows.flatMap((row) => row.deciding ?? []);
+      const templatedLinks = fetches.some(
+        (f, i) => checks[i].outcome === "links" && f.verification?.templated?.links,
+      );
       if (streamOutcome.kind === "links") {
-        streamDetails.push({ label: "Note", value: "link addon: links only, not content-checked" });
+        streamDetails.push({
+          label: "Note",
+          value: templatedLinks
+            ? "link addon: templated links (not content-checked)"
+            : "link addon: links only, not content-checked",
+        });
       }
       // A catalog addon whose stream resource answers nothing for its own titles is judged on its catalogs.
       if (streamOutcome.kind === "down" && isAuxiliaryStream(checks, walks)) {
@@ -1303,7 +1632,9 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
       perResource.push({
         resource: "stream",
         ok: streamOutcome.kind === "content" || streamOutcome.kind === "links",
-        summary: rows.map((row) => `${row.label} ${row.summary}`).join(" · "),
+        summary:
+          rows.map((row) => `${row.label} ${row.summary}`).join(" · ") +
+          (streamOutcome.kind === "links" && templatedLinks ? " · templated links" : ""),
         details: streamDetails,
       });
     }
@@ -1379,34 +1710,35 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
         metaAnswer = answer;
         const { status, data, parseError, attempts: routes } = answer;
         const unparsed = isOkStatus(status) ? parseError : undefined;
-        const missing = missingMetaFields(data?.meta);
-        const failedStatus = isOkStatus(status) ? undefined : describeStatus(answer);
-        const reason = failedStatus
-          ? failedStatus.reason
+        const defect = !isOkStatus(status)
+          ? describeStatus(answer)
           : unparsed
-            ? describeParseError(unparsed).reason
-            : !data?.meta
-              ? "response has no meta object"
-              : missing.length > 0
-                ? `meta missing ${missing.join(", ")}`
-                : undefined;
-        const ok = reason === undefined;
+            ? describeParseError(unparsed)
+            : metaBodyDefect(data);
+        const meta = validMeta(f);
+        const flaws = defect || !meta ? [] : metaFlaws(meta, test.type, test.id);
+        // A flawed meta Stremio can still show is a problem worth naming, never one that decides the verdict.
+        const ok = !defect && (flaws.length === 0 || primary === "meta");
+        const flawed = flaws.map((x) => x.summary).join(", ");
         perResource.push({
           resource: "meta",
           ok,
-          summary: ok
-            ? "valid"
-            : failedStatus
-              ? failedStatus.summary
-              : unparsed
-                ? describeParseError(unparsed).summary
-                : "invalid",
-          details: requestRows(f.path, routes, {
-            testId,
-            reason,
-            parseError: unparsed,
-            note: softBlockNote(answer),
-          }),
+          summary: defect
+            ? defect.summary
+            : flaws.length === 0
+              ? "valid"
+              : ok
+                ? `valid · ${flawed}`
+                : flawed,
+          details: [
+            ...requestRows(f.path, routes, {
+              testId,
+              reason: defect?.reason,
+              parseError: unparsed,
+              note: softBlockNote(answer),
+            }),
+            ...flaws.map((x) => ({ label: "Reason", value: x.reason })),
+          ],
         });
         metaDeciding = [{ path: f.path, ms: answerTime(answer) }];
         log.debug(
@@ -1439,6 +1771,16 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
     }
   }
 
+  let addonCatalogAnswer: ContentAnswer | undefined;
+  let addonCatalogDeciding: Timing[] = [];
+  if (addonCatalogs.length > 0) {
+    const checked = await checkAddonCatalog(base, addonCatalogs[0], primary === "addon_catalog");
+    perResource.push(checked.result);
+    addonCatalogAnswer = checked.answer;
+    addonCatalogDeciding = checked.deciding ? [checked.deciding] : [];
+    log.debug({ step: "addon_catalog", ok: checked.result.ok }, "addon catalog check");
+  }
+
   // Secondary resources: shape-only, annotate, never flip DOWN.
   if (subtitlesRes && primary !== "subtitles") {
     const pool = [
@@ -1459,6 +1801,12 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
 
   if (streamOutcome?.kind === "needs-config") return needsConfiguration(streamOutcome.reason);
 
+  const coverage = catalogCoverage(await coverCatalogs(catalogOnce, plans, attempts));
+  if (coverage) {
+    const after = perResource.findIndex((r) => r.resource === "catalog") + 1;
+    perResource.splice(after > 0 ? after : perResource.length, 0, coverage);
+  }
+
   // Step 5: Verdict from the primary resource.
   const primaryResult = perResource.find((r) => r.resource === primary);
   if (primaryResult?.ok) {
@@ -1468,9 +1816,11 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
         ? streamDeciding
         : primary === "catalog"
           ? walks.flatMap((w) => w.deciding ?? [])
-          : primary === "subtitles"
-            ? subtitleDeciding
-            : metaDeciding,
+          : primary === "meta"
+            ? metaDeciding
+            : primary === "subtitles"
+              ? subtitleDeciding
+              : addonCatalogDeciding,
     );
   }
   const okResources = perResource.filter((r) => r.ok);
@@ -1506,9 +1856,11 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
       ? streamAnswers
       : primary === "catalog"
         ? attempts.map((a) => a.answer)
-        : primary === "subtitles"
-          ? subtitleAnswers
-          : [metaAnswer];
+        : primary === "meta"
+          ? [metaAnswer]
+          : primary === "subtitles"
+            ? subtitleAnswers
+            : [addonCatalogAnswer];
   const unconfigured = await unconfiguredReason(live, primaryAnswers, manifestAttempts, base);
   if (unconfigured) return needsConfiguration(unconfigured);
 

@@ -54,6 +54,8 @@ export interface JsonResult<T> {
   attempts: Attempt[];
   /** The route whose 2xx answer wasn't `usable` when the other route's answer was, so the result came from the other route. */
   softBlockedOn?: Route;
+  /** The answer's `Access-Control-Allow-Origin`, unset when it sent none. */
+  allowOrigin?: string;
 }
 
 /** Thrown when every attempted route failed at the transport level, so callers can still report what was tried. */
@@ -82,7 +84,8 @@ function describeError(e: unknown, timeout: number): string {
 
 const EXCERPT_LENGTH = 80;
 
-function excerptOf(text: string): string {
+/** A short, publishable excerpt of untrusted text: whitespace collapsed, URLs and key-like tokens dropped. */
+export function excerptOf(text: string): string {
   const clean = text
     .slice(0, 4 * EXCERPT_LENGTH)
     .replace(/[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]*/gi, "…")
@@ -168,17 +171,23 @@ async function fetchJson<T>(
   url: string,
   timeout: number,
   dispatcher: Dispatcher | undefined,
-  maxBytes: number | undefined,
+  headers: Record<string, string> = {},
+  maxBytes?: number,
 ): Promise<Answer<T> & { redirect?: string; retryAfterMs?: number }> {
   const res = await fetch(url, {
-    headers: { "User-Agent": USER_AGENT, Accept: "application/json" },
+    headers: { "User-Agent": USER_AGENT, Accept: "application/json", ...headers },
     redirect: "follow",
     signal: AbortSignal.timeout(timeout),
     dispatcher,
   });
   const redirect = redirectOf(url, res.url);
   const retryAfterMs = retryAfterOf(res.headers.get("retry-after"));
-  const extra = { redirect, ...(retryAfterMs !== undefined ? { retryAfterMs } : {}) };
+  const allowOrigin = res.headers.get("access-control-allow-origin");
+  const extra = {
+    redirect,
+    ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+    ...(allowOrigin !== null ? { allowOrigin } : {}),
+  };
   let text: string;
   if (maxBytes === undefined) {
     text = await res.text();
@@ -229,6 +238,8 @@ export interface GetJsonOptions<T> {
   usable?: (data: T) => boolean;
   /** Stop reading a body past this many bytes and report it as too large, so a runaway answer can't exhaust memory. */
   maxBytes?: number;
+  /** Sent on every try besides the worker's own User-Agent and Accept. */
+  headers?: Record<string, string>;
 }
 
 /** How settled one try leaves the request; the best try wins, the latest among equals. */
@@ -258,7 +269,7 @@ interface Try<T> {
 export async function getJson<T = unknown>(
   url: string,
   timeout: number,
-  { retry = false, usable, maxBytes }: GetJsonOptions<T> = {},
+  { retry = false, usable, maxBytes, headers }: GetJsonOptions<T> = {},
 ): Promise<JsonResult<T>> {
   const attempts: Attempt[] = [];
   const tries: Try<T>[] = [];
@@ -274,7 +285,7 @@ export async function getJson<T = unknown>(
     const start = Date.now();
     let fetched: Awaited<ReturnType<typeof fetchJson<T>>>;
     try {
-      fetched = await fetchJson<T>(url, timeout, dispatcherOf(route), maxBytes);
+      fetched = await fetchJson<T>(url, timeout, dispatcherOf(route), headers, maxBytes);
     } catch (error) {
       const timedOut = isTimeout(error);
       attempts.push({
@@ -309,7 +320,7 @@ export async function getJson<T = unknown>(
     return t;
   };
 
-  const routes: Route[] = proxy ? ["WARP", "direct"] : ["direct"];
+  const routes = availableRoutes();
   for (const route of routes) {
     if ((await once(route)).rank === Rank.Final) return settle();
   }
@@ -357,7 +368,7 @@ export interface Sample {
 export async function getSample(url: string, timeout: number, maxBytes: number): Promise<Sample> {
   const attempts: Attempt[] = [];
   let kept: { rank: number; sample: Omit<Sample, "attempts"> } | undefined;
-  for (const route of proxy ? (["WARP", "direct"] as const) : (["direct"] as const)) {
+  for (const route of availableRoutes()) {
     const start = Date.now();
     try {
       const res = await fetch(url, {
@@ -408,7 +419,12 @@ function transientRetryRoute<T>(routes: Route[], tries: Try<T>[]): Route | undef
   );
 }
 
-function dispatcherOf(route: Route): Dispatcher | undefined {
+/** The routes a request can take, WARP first when it is configured. */
+export function availableRoutes(): Route[] {
+  return proxy ? ["WARP", "direct"] : ["direct"];
+}
+
+export function dispatcherOf(route: Route): Dispatcher | undefined {
   return route === "WARP" ? proxy : undefined;
 }
 
