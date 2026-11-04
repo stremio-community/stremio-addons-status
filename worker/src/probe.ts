@@ -10,6 +10,7 @@ import { attemptsOf, getJson, type Attempt } from "./http.js";
 import { encodeId, errMsg } from "./utils.js";
 import { hasSourceFor, resolveForPrefixes, type TestContent } from "./idsources.js";
 import { logger } from "./logger.js";
+import { normalizeResources } from "./manifest.js";
 import type {
   DetailRow,
   NormalizedAddon,
@@ -42,25 +43,6 @@ function isPlayableStream(s: unknown): s is Stream {
   return STREAM_SOURCE_FIELDS.some((f) => {
     const v = obj[f];
     return Array.isArray(v) ? v.length > 0 : v != null && v !== "";
-  });
-}
-
-interface NormResource {
-  name: string;
-  types: string[];
-  idPrefixes: string[];
-}
-
-function normalizeResources(m: Manifest): NormResource[] {
-  return (m.resources ?? []).map((r) => {
-    if (typeof r === "string") {
-      return { name: r, types: m.types ?? [], idPrefixes: m.idPrefixes ?? [] };
-    }
-    return {
-      name: r.name,
-      types: r.types ?? m.types ?? [],
-      idPrefixes: r.idPrefixes ?? m.idPrefixes ?? [],
-    };
   });
 }
 
