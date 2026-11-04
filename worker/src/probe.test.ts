@@ -2,7 +2,7 @@ import { afterEach, describe, it, expect, vi, beforeEach } from "vitest";
 import type { Manifest } from "@stremio-addon/sdk";
 import type { NormalizedAddon } from "./types.js";
 import type { TestContent } from "./idsources.js";
-import type { Attempt, ParseError } from "./http.js";
+import type { Attempt, GetJsonOptions, ParseError, Route } from "./http.js";
 import type { NormResource } from "./manifest.js";
 
 // --- mocks -----------------------------------------------------------------
@@ -14,8 +14,11 @@ type RouteResult = {
   redirect?: string;
   /** Replaces the single direct attempt the mock reports by default. */
   attempts?: Attempt[];
+  softBlockedOn?: Route;
 };
-let router: (url: string) => RouteResult | Promise<RouteResult>;
+let router: (url: string, options: GetJsonOptions<unknown>) => RouteResult | Promise<RouteResult>;
+/** The options of every getJson call, by URL. */
+const requestOptions = new Map<string, GetJsonOptions<unknown>>();
 
 const idsourcesMock = {
   hasSourceFor: (_prefixes: readonly string[]) => false,
@@ -24,8 +27,9 @@ const idsourcesMock = {
 
 vi.mock("./http.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./http.js")>()),
-  getJson: async (url: string) => {
-    const { redirect, attempts, ...res } = await router(url);
+  getJson: async (url: string, _timeout: number, options: GetJsonOptions<unknown> = {}) => {
+    requestOptions.set(url, options);
+    const { redirect, attempts, ...res } = await router(url, options);
     return {
       ...res,
       attempts: attempts ?? [
@@ -33,7 +37,6 @@ vi.mock("./http.js", async (importOriginal) => ({
       ],
     };
   },
-  attemptsOf: () => [],
 }));
 
 vi.mock("./idsources.js", () => ({
@@ -45,6 +48,7 @@ vi.mock("./idsources.js", () => ({
 // Import after mocks are registered.
 const { probe, forgetRememberedTargets } = await import("./probe.js");
 const { OVERRIDES } = await import("./overrides.js");
+const { RequestFailedError } = await import("./http.js");
 const overrides = OVERRIDES as Record<string, import("./overrides.js").AddonOverride>;
 
 // --- helpers ---------------------------------------------------------------
@@ -110,6 +114,7 @@ beforeEach(() => {
   idsourcesMock.hasSourceFor = () => false;
   idsourcesMock.candidatesFor = async () => [];
   forgetRememberedTargets();
+  requestOptions.clear();
 });
 
 // --- tests -----------------------------------------------------------------
@@ -2090,7 +2095,7 @@ describe("probe own catalogs as the ID source", () => {
     const catalog = r.detail.perResource.find((p) => p.resource === "catalog");
     expect(catalog?.details).toContainEqual({
       label: "Reason",
-      value: "addon responded with HTTP 500",
+      value: "addon responded with HTTP 500: Unexpected token '<'",
     });
   });
 
@@ -2676,6 +2681,383 @@ describe("probe catalog titles as Stremio opens them", () => {
     expect(streams).toEqual(["/stream/tv/stremio-status:torrentio.json"]);
     expect(r.detail.perResource.find((p) => p.resource === "catalog")?.summary).toBe(
       "other 1 metas",
+    );
+  });
+});
+
+describe("probe transport", () => {
+  const scraperAddon = () =>
+    addon({
+      types: ["movie"],
+      resources: [{ name: "stream", types: ["movie"], idPrefixes: ["tt"] }],
+    });
+  const catalogAddon = () =>
+    addon({
+      types: ["movie"],
+      resources: ["catalog"],
+      catalogs: [{ type: "movie", id: "top", name: "Top" }],
+    });
+  const borrowMovie = () => {
+    idsourcesMock.hasSourceFor = () => true;
+    idsourcesMock.candidatesFor = async () => [{ type: "movie", id: "tt0111161" }];
+  };
+  const STREAM_URL = `${BASE}/stream/movie/tt0111161.json`;
+  const attempt = (route: Route, status: number, durationMs = 1): Attempt => ({
+    route,
+    status,
+    durationMs,
+  });
+
+  /** Answers like getJson: a WARP answer the caller finds unusable sends the request direct too, and a usable direct answer wins. */
+  const overRoutes =
+    (warp: RouteResult, direct: RouteResult) =>
+    (_url: string, { usable }: GetJsonOptions<unknown>): RouteResult => {
+      const tried = [attempt("WARP", warp.status)];
+      if (!usable || usable(warp.data)) return { ...warp, attempts: tried };
+      tried.push(attempt("direct", direct.status));
+      return usable(direct.data)
+        ? { ...direct, attempts: tried, softBlockedOn: "WARP" }
+        : { ...direct, attempts: tried };
+    };
+
+  const timeouts = (ms: number) =>
+    new RequestFailedError(`timed out after ${ms}ms`, [
+      { route: "WARP", error: `timed out after ${ms}ms`, timedOut: true, durationMs: ms },
+      { route: "direct", error: `timed out after ${ms}ms`, timedOut: true, durationMs: ms },
+      { route: "direct", error: `timed out after ${ms}ms`, timedOut: true, durationMs: ms },
+    ]);
+
+  it("retries the manifest request", async () => {
+    const m = scraperAddon();
+    borrowMovie();
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      ["/stream/movie/tt0111161.json", { status: 200, data: { streams: [PLAYABLE] } }],
+    ]);
+    await probe(m);
+    expect(requestOptions.get(`${BASE}/manifest.json`)).toEqual({ retry: true });
+  });
+
+  it("reports a manifest rate limited on every try as rate limited (Torrentio instance)", async () => {
+    const m = scraperAddon();
+    router = routes([
+      [
+        "/manifest.json",
+        {
+          status: 429,
+          data: undefined,
+          attempts: [
+            attempt("WARP", 429),
+            attempt("WARP", 429),
+            attempt("direct", 429),
+            attempt("direct", 429),
+          ],
+        },
+      ],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(false);
+    expect(r.detail.livenessError).toBe("unreachable (rate limited)");
+    expect(r.detail.manifestDetails).toContainEqual({
+      label: "Reason",
+      value: "addon responded with HTTP 429 (rate limited)",
+    });
+  });
+
+  it("reports a manifest that timed out on every try as timed out, listing each try (AIO Substitle)", async () => {
+    const m = scraperAddon();
+    router = routes([
+      [
+        "/manifest.json",
+        () => {
+          throw timeouts(15000);
+        },
+      ],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(false);
+    expect(r.detail.livenessError).toBe("timed out");
+    expect(r.detail.manifestDetails.filter((d) => d.label === "Attempt")).toHaveLength(3);
+    expect(r.detail.manifestDetails).toContainEqual({
+      label: "Reason",
+      value: "timed out after 15000ms",
+    });
+  });
+
+  it("keeps the transport error for a manifest that was refused", async () => {
+    const m = scraperAddon();
+    router = routes([
+      [
+        "/manifest.json",
+        () => {
+          throw new RequestFailedError("fetch failed (ECONNREFUSED)", [
+            { route: "direct", error: "fetch failed (ECONNREFUSED)", durationMs: 1 },
+          ]);
+        },
+      ],
+    ]);
+    const r = await probe(m);
+    expect(r.detail.livenessError).toBe("unreachable (fetch failed (ECONNREFUSED))");
+  });
+
+  it("is UP when WARP's stream answer is empty but direct's is playable, listing both attempts (yastream)", async () => {
+    const m = scraperAddon();
+    borrowMovie();
+    const route = routes([["/manifest.json", manifestOk(m.manifest)]]);
+    const stream = overRoutes(
+      { status: 200, data: { streams: [] } },
+      { status: 200, data: { streams: [PLAYABLE] } },
+    );
+    router = (url, options) => (url === STREAM_URL ? stream(url, options) : route(url));
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(r.detail.mode).toBe("content");
+    const details = r.detail.perResource.find((p) => p.resource === "stream")?.details;
+    expect(details).toContainEqual({ label: "Attempt", value: "WARP · HTTP 200 · 1ms" });
+    expect(details).toContainEqual({ label: "Attempt", value: "direct · HTTP 200 · 1ms" });
+    expect(details).toContainEqual({ label: "Note", value: "soft-blocked on WARP" });
+    expect(requestOptions.get(STREAM_URL)?.retry).toBe(true);
+  });
+
+  it("counts only playable streams as a usable stream answer", async () => {
+    const m = scraperAddon();
+    borrowMovie();
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      ["/stream/movie/tt0111161.json", { status: 200, data: { streams: [PLAYABLE] } }],
+    ]);
+    await probe(m);
+    const usable = requestOptions.get(STREAM_URL)?.usable;
+    expect(usable?.({ streams: [PLAYABLE] })).toBe(true);
+    expect(usable?.({ streams: [] })).toBe(false);
+    expect(usable?.({ streams: [{ externalUrl: "https://www.imdb.com/title/tt0111161/" }] })).toBe(
+      false,
+    );
+    expect(
+      usable?.({
+        streams: [
+          {
+            name: "[❌] Comet",
+            description: "⚠️ OBSOLETE CONFIGURATION, PLEASE RE-CONFIGURE ON https://comet.test ⚠️",
+            url: "https://comet.test/placeholder",
+          },
+        ],
+      }),
+    ).toBe(false);
+    expect(usable?.(null)).toBe(false);
+  });
+
+  it("is UP when WARP's catalog answer is empty but direct's has titles (SosacTV2)", async () => {
+    const m = catalogAddon();
+    const route = routes([["/manifest.json", manifestOk(m.manifest)]]);
+    const catalog = overRoutes(
+      { status: 200, data: { metas: [] } },
+      { status: 200, data: { metas: [{ id: "x1", type: "movie", name: "One" }] } },
+    );
+    router = (url, options) => (url.includes("/catalog/") ? catalog(url, options) : route(url));
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    const details = r.detail.perResource.find((p) => p.resource === "catalog")?.details;
+    expect(details).toContainEqual({ label: "Note", value: "soft-blocked on WARP" });
+    const usable = requestOptions.get(`${BASE}/catalog/movie/top.json`)?.usable;
+    expect(usable?.({ metas: [{ id: "x1", type: "movie", name: "One" }] })).toBe(true);
+    expect(
+      usable?.({
+        metas: [
+          { id: "pictorium:notice:missing-tmdb-key", type: "movie", name: "Chiave TMDB richiesta" },
+        ],
+      }),
+    ).toBe(false);
+    expect(usable?.({ metas: [{ id: "x1", type: "movie" }] })).toBe(false);
+  });
+
+  it("retries only the requests that decide the verdict", async () => {
+    const m = addon({
+      types: ["movie"],
+      resources: [
+        "catalog",
+        { name: "meta", types: ["movie"], idPrefixes: ["tt"] },
+        { name: "stream", types: ["movie"], idPrefixes: ["tt"] },
+        { name: "subtitles", types: ["movie"], idPrefixes: ["tt"] },
+      ],
+      catalogs: [{ type: "movie", id: "top", name: "Top" }],
+    });
+    idsourcesMock.hasSourceFor = () => true;
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      ["/catalog/movie/top.json", { status: 200, data: { metas: [] } }],
+      [
+        "/meta/movie/tt0111161.json",
+        { status: 200, data: { meta: { id: "tt0111161", type: "movie", name: "x" } } },
+      ],
+      ["/stream/movie/tt0111161.json", { status: 200, data: { streams: [PLAYABLE] } }],
+      ["/subtitles/", { status: 200, data: { subtitles: [] } }],
+    ]);
+    borrowMovie();
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(requestOptions.get(STREAM_URL)?.retry).toBe(true);
+    for (const [url, options] of requestOptions) {
+      if (url.includes("/catalog/") || url.includes("/meta/") || url.includes("/subtitles/")) {
+        expect(options, url).toEqual({});
+      }
+    }
+  });
+
+  it("reports a stream request rate limited on every route as rate limited", async () => {
+    const m = scraperAddon();
+    borrowMovie();
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      ["/stream/movie/tt0111161.json", { status: 429, data: undefined }],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(false);
+    expect(r.detail.perResource.find((p) => p.resource === "stream")?.summary).toBe(
+      "movie rate limited",
+    );
+  });
+
+  it("reports a stream request that timed out on every try as timed out (Hellspy)", async () => {
+    const m = scraperAddon();
+    borrowMovie();
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/stream/movie/tt0111161.json",
+        () => {
+          throw timeouts(30000);
+        },
+      ],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(false);
+    const stream = r.detail.perResource.find((p) => p.resource === "stream");
+    expect(stream?.summary).toBe("movie timed out");
+    expect(stream?.details).toContainEqual({ label: "Reason", value: "timed out after 30000ms" });
+  });
+
+  it("stops retrying stream requests once one went unanswered, so a hanging addon costs at most one retry (Hellspy)", async () => {
+    const m = scraperAddon();
+    idsourcesMock.hasSourceFor = () => true;
+    idsourcesMock.candidatesFor = async () =>
+      ["tt1", "tt2", "tt3"].map((id) => ({ type: "movie", id }));
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/stream/",
+        () => {
+          throw timeouts(30000);
+        },
+      ],
+    ]);
+    await probe(m);
+    expect(requestOptions.get(`${BASE}/stream/movie/tt1.json`)?.retry).toBe(true);
+    expect(requestOptions.get(`${BASE}/stream/movie/tt2.json`)?.retry).toBe(false);
+    expect(requestOptions.has(`${BASE}/stream/movie/tt3.json`)).toBe(false);
+  });
+
+  it("shows the addon's own JSON error in the reason row (Ruído)", async () => {
+    const m = addon({
+      types: ["series"],
+      resources: [{ name: "stream", types: ["series"], idPrefixes: ["tt"] }],
+    });
+    idsourcesMock.hasSourceFor = () => true;
+    idsourcesMock.candidatesFor = async () => [
+      { type: "series", id: "tt36601237", episodeId: "tt36601237:1:1" },
+    ];
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/stream/series/tt36601237:1:1.json",
+        {
+          status: 503,
+          data: {
+            error: "SOURCE_UNAVAILABLE",
+            message: "Não foi possível obter vídeo da fonte. Tenta novamente mais tarde.",
+          },
+        },
+      ],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(false);
+    const stream = r.detail.perResource.find((p) => p.resource === "stream");
+    expect(stream?.summary).toBe("series HTTP 503");
+    expect(stream?.details).toContainEqual({
+      label: "Reason",
+      value: expect.stringMatching(
+        /^addon responded with HTTP 503: SOURCE_UNAVAILABLE: Não foi possível obter vídeo/,
+      ),
+    });
+  });
+
+  it("marks a content UP whose deciding request took over 10 s as slow, without changing the verdict", async () => {
+    const m = scraperAddon();
+    borrowMovie();
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/stream/movie/tt0111161.json",
+        {
+          status: 200,
+          data: { streams: [PLAYABLE] },
+          attempts: [attempt("WARP", 503, 20), attempt("direct", 200, 14_200)],
+        },
+      ],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(r.detail.mode).toBe("content");
+    const stream = r.detail.perResource.find((p) => p.resource === "stream");
+    expect(stream?.summary).toBe("movie 1 playable of 1 · slow (14 s)");
+    expect(stream?.details).toContainEqual({
+      label: "Slow",
+      value: "/stream/movie/tt0111161.json answered in 14.2 s",
+    });
+  });
+
+  it("does not mark a fast content UP or a DOWN as slow", async () => {
+    const m = scraperAddon();
+    borrowMovie();
+    const answer = (streams: unknown[], durationMs: number): RouteResult => ({
+      status: 200,
+      data: { streams },
+      attempts: [attempt("WARP", 200, durationMs)],
+    });
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      ["/stream/movie/tt0111161.json", answer([PLAYABLE], 9_000)],
+    ]);
+    const fast = await probe(m);
+    expect(fast.success).toBe(true);
+    expect(fast.message).not.toContain("slow");
+
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      ["/stream/movie/tt0111161.json", answer([], 20_000)],
+    ]);
+    const down = await probe(m);
+    expect(down.success).toBe(false);
+    expect(down.message).not.toContain("slow");
+  });
+
+  it("marks a slow catalog-primary UP as slow", async () => {
+    const m = catalogAddon();
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/catalog/movie/top.json",
+        {
+          status: 200,
+          data: { metas: [{ id: "x1", type: "movie", name: "One" }] },
+          attempts: [attempt("WARP", 200, 17_000)],
+        },
+      ],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(r.detail.perResource.find((p) => p.resource === "catalog")?.summary).toBe(
+      "1 metas · slow (17 s)",
     );
   });
 });

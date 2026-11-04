@@ -5,8 +5,13 @@ import { streamIdForMeta, type PlayableMeta } from "./episodes.js";
 import {
   attemptsOf,
   describeParseError,
+  describeRequestError,
+  describeStatus,
   getJson,
+  softBlockNote,
   type Attempt,
+  type Failure,
+  type GetJsonOptions,
   type JsonResult,
   type ParseError,
 } from "./http.js";
@@ -46,6 +51,8 @@ const MAX_UNANSWERED_STREAM_REQUESTS = 2;
 /** Distinctive titles for search-only catalogs: some search backends match nothing for a common word like "the". */
 const SEARCH_TERMS = ["batman", "naruto", "love"];
 const CINEMETA = "https://v3-cinemeta.strem.io";
+/** A deciding request slower than this still works, but keeps a user waiting long enough to say so. */
+const SLOW_MS = 10_000;
 const IMDB_ID = /^tt\d+$/;
 
 interface CatalogResponse {
@@ -92,7 +99,8 @@ function requestRows(
     testId,
     reason,
     parseError,
-  }: { testId?: string; reason?: string; parseError?: ParseError } = {},
+    note,
+  }: { testId?: string; reason?: string; parseError?: ParseError; note?: string } = {},
 ): DetailRow[] {
   const parsed = parseError ? describeParseError(parseError) : undefined;
   const why = reason ?? parsed?.reason;
@@ -101,8 +109,62 @@ function requestRows(
     ...(testId ? [{ label: "Test ID", value: testId }] : []),
     ...attempts.flatMap(attemptRows),
     ...(why ? [{ label: "Reason", value: why }] : []),
+    ...(note ? [{ label: "Note", value: note }] : []),
     ...(parsed?.details ?? []),
   ];
+}
+
+/** How long the route whose answer the request kept took to give it, leaving out the tries it replaced. */
+function answerTime({
+  status,
+  attempts,
+}: Pick<JsonResult<unknown>, "status" | "attempts">): number {
+  return attempts.findLast((a) => a.status === status)?.durationMs ?? 0;
+}
+
+/** A request that decided the verdict, and how long its answer took. */
+interface Timing {
+  path: string;
+  ms: number;
+}
+
+/** Note a passing primary resource whose slowest deciding request kept the user waiting. */
+function markSlow(res: PerResourceResult, deciding: Timing[]): void {
+  const slowest = deciding.reduce<Timing | undefined>(
+    (a, b) => (a && a.ms >= b.ms ? a : b),
+    undefined,
+  );
+  if (!slowest || slowest.ms <= SLOW_MS) return;
+  res.summary += ` · slow (${Math.round(slowest.ms / 1000)} s)`;
+  res.details.unshift({
+    label: "Slow",
+    value: `${slowest.path} answered in ${(slowest.ms / 1000).toFixed(1)} s`,
+  });
+}
+
+/** The options for a request that decides the verdict: worth a retry, and worth asking the other route when the answer has nothing in it. */
+function deciding<T>(usable: (data: T) => boolean, retry = true): GetJsonOptions<T> {
+  return { retry, usable };
+}
+
+function hasPlayableStream(data: StreamResponse | undefined, baseUrl: string): boolean {
+  const streams = data?.streams;
+  return (
+    Array.isArray(streams) &&
+    streams.some((s) => classifyStream(s, { baseUrl }).kind === "playable")
+  );
+}
+
+function hasRealMeta(data: CatalogResponse | undefined): boolean {
+  const metas = data?.metas;
+  return (
+    Array.isArray(metas) &&
+    metas.some((m) => missingMetaFields(m).length === 0 && placeholderMeta(m) === undefined)
+  );
+}
+
+function hasValidMeta(data: MetaResponse | undefined): boolean {
+  return missingMetaFields(data?.meta).length === 0;
 }
 
 /** A request summarized in one row, for the requests a check made besides the one its full rows describe. */
@@ -215,29 +277,31 @@ async function fetchCatalog(
   base: string,
   catalog: ManifestCatalog,
   path: string,
+  options: GetJsonOptions<CatalogResponse>,
 ): Promise<CatalogAttempt> {
   const attempt = { type: catalog.type, path, items: [] as Candidate[] };
   try {
-    const answer = await getJson<CatalogResponse>(base + path, config.timeouts.catalog);
-    const { status, data, parseError, attempts } = answer;
+    const result = await getJson<CatalogResponse>(base + path, config.timeouts.catalog, options);
+    const { status, data, parseError, attempts } = result;
+    const note = softBlockNote(result);
+    const answered = { ...attempt, answer: result };
     if (!isOkStatus(status)) {
+      const { summary, reason } = describeStatus(result);
       return {
-        ...attempt,
-        answer,
+        ...answered,
         kind: "failed",
         ok: false,
-        summary: `HTTP ${status}`,
-        details: requestRows(path, attempts, { reason: `addon responded with HTTP ${status}` }),
+        summary,
+        details: requestRows(path, attempts, { reason, note }),
       };
     }
     if (parseError) {
       return {
-        ...attempt,
-        answer,
+        ...answered,
         kind: "failed",
         ok: false,
         summary: describeParseError(parseError).summary,
-        details: requestRows(path, attempts, { parseError }),
+        details: requestRows(path, attempts, { parseError, note }),
       };
     }
     const metas = Array.isArray(data?.metas) ? data.metas : [];
@@ -248,35 +312,32 @@ async function fetchCatalog(
           ? "returned no metas"
           : `none of ${metas.length} metas has an id, type and name`;
       return {
-        ...attempt,
-        answer,
+        ...answered,
         kind: "empty",
         ok: false,
         summary: "empty",
-        details: requestRows(path, attempts, { reason }),
+        details: requestRows(path, attempts, { reason, note }),
       };
     }
     const real = valid.filter((m) => placeholderMeta(m) === undefined);
     if (real.length === 0) {
       const notice = strongestPlaceholder(valid.map((m) => placeholderMeta(m)!))!;
       return {
-        ...attempt,
-        answer,
+        ...answered,
         kind: "notices",
         // A catalog of donation or news tiles still answers; it only has nothing to test with.
         ok: notice.placeholder === "no-content",
         summary: "only notices",
         notice,
-        details: requestRows(path, attempts, { reason: `addon says: ${notice.label}` }),
+        details: requestRows(path, attempts, { reason: `addon says: ${notice.label}`, note }),
       };
     }
     return {
-      ...attempt,
-      answer,
+      ...answered,
       kind: "items",
       ok: true,
       summary: `${metas.length} metas`,
-      details: requestRows(path, attempts),
+      details: requestRows(path, attempts, { note }),
       items: real.map((m) => ({
         type: m.type || catalog.type,
         id: m.id,
@@ -285,12 +346,13 @@ async function fetchCatalog(
       })),
     };
   } catch (e) {
+    const { summary, reason } = describeRequestError(e);
     return {
       ...attempt,
       kind: "failed",
       ok: false,
-      summary: "unreachable",
-      details: requestRows(path, attemptsOf(e), { reason: errMsg(e) }),
+      summary,
+      details: requestRows(path, attemptsOf(e), { reason }),
     };
   }
 }
@@ -302,6 +364,8 @@ interface CatalogWalk {
   label: string;
   summary: string;
   details: DetailRow[];
+  /** The request that yielded titles. */
+  deciding?: Timing;
 }
 
 function judgeCatalogWalk(attempts: CatalogAttempt[]): CatalogWalk {
@@ -310,7 +374,14 @@ function judgeCatalogWalk(attempts: CatalogAttempt[]): CatalogWalk {
   const others = attempts.filter((a) => a !== shown);
   const details = [...shown.details, ...others.map((a) => alsoTriedRow(a.path, a.summary))];
   if (found) {
-    return { ok: true, content: true, label: found.type, summary: found.summary, details };
+    return {
+      ok: true,
+      content: true,
+      label: found.type,
+      summary: found.summary,
+      details,
+      deciding: { path: found.path, ms: found.answer ? answerTime(found.answer) : 0 },
+    };
   }
   const summaries = [...new Set(attempts.map((a) => a.summary))].join(", ");
   return {
@@ -326,7 +397,7 @@ interface MetaFetch {
   path: string;
   /** Unset when the request threw. */
   answer?: JsonResult<MetaResponse>;
-  error?: string;
+  failure?: Failure;
   attempts: Attempt[];
 }
 
@@ -389,10 +460,10 @@ interface StreamFetch {
   /** Unset when the request threw. */
   status?: number;
   streams: StreamClass[];
-  error?: string;
+  failure?: Failure;
   parseError?: ParseError;
   /** Unset when the request threw. */
-  answer?: ContentAnswer;
+  answer?: JsonResult<StreamResponse>;
 }
 
 type Placeholder = Extract<StreamClass, { kind: "placeholder" }> & { repeated?: boolean };
@@ -423,6 +494,8 @@ interface StreamCheckResult {
   notice?: Placeholder;
   summary: string;
   details: DetailRow[];
+  /** Unset when the request threw. */
+  answeredInMs?: number;
 }
 
 /**
@@ -450,8 +523,10 @@ function judgeStreamFetch(
   repeated: Set<string>,
   configurable: boolean,
 ): StreamCheckResult {
+  const note = f.answer && softBlockNote(f.answer);
   const rows = (reason?: string) =>
-    requestRows(f.path, f.attempts, { testId: f.testId, reason, parseError: f.parseError });
+    requestRows(f.path, f.attempts, { testId: f.testId, reason, parseError: f.parseError, note });
+  const answeredInMs = f.answer && answerTime(f.answer);
   const failed = {
     target: f.target,
     path: f.path,
@@ -459,16 +534,15 @@ function judgeStreamFetch(
     total: 0,
     playable: 0,
     links: 0,
+    answeredInMs,
   };
-  if (f.status === undefined) {
-    return { ...failed, summary: "unreachable", details: rows(f.error) };
+  if (!f.answer) {
+    const { summary, reason } = f.failure ?? { summary: "unreachable", reason: undefined };
+    return { ...failed, summary, details: rows(reason) };
   }
-  if (!isOkStatus(f.status)) {
-    return {
-      ...failed,
-      summary: `HTTP ${f.status}`,
-      details: rows(`addon responded with HTTP ${f.status}`),
-    };
+  if (!isOkStatus(f.answer.status)) {
+    const { summary, reason } = describeStatus(f.answer);
+    return { ...failed, summary, details: rows(reason) };
   }
   if (f.parseError) {
     return { ...failed, summary: describeParseError(f.parseError).summary, details: rows() };
@@ -514,6 +588,7 @@ function judgeStreamFetch(
     notice,
     summary,
     details: rows(reason),
+    answeredInMs,
   };
 }
 
@@ -683,13 +758,18 @@ function metaPath(type: string, id: string): string {
   return `/meta/${encodeId(type)}/${encodeId(id)}.json`;
 }
 
-async function fetchMeta(base: string, type: string, id: string): Promise<MetaFetch> {
+async function fetchMeta(
+  base: string,
+  type: string,
+  id: string,
+  options: GetJsonOptions<MetaResponse>,
+): Promise<MetaFetch> {
   const path = metaPath(type, id);
   try {
-    const answer = await getJson<MetaResponse>(base + path, config.timeouts.meta);
+    const answer = await getJson<MetaResponse>(base + path, config.timeouts.meta, options);
     return { path, answer, attempts: answer.attempts };
   } catch (e) {
-    return { path, error: errMsg(e), attempts: attemptsOf(e) };
+    return { path, failure: describeRequestError(e), attempts: attemptsOf(e) };
   }
 }
 
@@ -723,14 +803,24 @@ async function fetchStream(ctx: ProbeContext, target: StreamTarget): Promise<Str
   const path = `/stream/${encodeId(target.type)}/${encodeId(id)}.json`;
   const request = { target, id, path, testId: describeTestId(id, target.source) };
   try {
-    const answer = await getJson<StreamResponse>(ctx.base + path, config.timeouts.stream);
+    const answer = await getJson<StreamResponse>(
+      ctx.base + path,
+      config.timeouts.stream,
+      // After one request went unanswered, a retry mostly doubles the wait on an addon that hangs.
+      deciding((data) => hasPlayableStream(data, ctx.base), ctx.unanswered === 0),
+    );
     const { status, data, parseError, attempts } = answer;
     const raw = Array.isArray(data?.streams) ? data!.streams! : [];
     const streams = raw.map((st) => classifyStream(st, { baseUrl: ctx.base }));
     const unparsed = isOkStatus(status) ? parseError : undefined;
     return { ...request, status, attempts, streams, parseError: unparsed, answer };
   } catch (e) {
-    return { ...request, attempts: attemptsOf(e), streams: [], error: errMsg(e) };
+    return {
+      ...request,
+      attempts: attemptsOf(e),
+      streams: [],
+      failure: describeRequestError(e),
+    };
   }
 }
 
@@ -817,6 +907,8 @@ interface StreamRow {
   label: string;
   summary: string;
   details: DetailRow[];
+  /** The request that passed the type. */
+  deciding?: Timing;
 }
 
 function typeProbeRow(p: TypeProbe, checkOf: Map<StreamFetch, StreamCheckResult>): StreamRow {
@@ -832,6 +924,7 @@ function typeProbeRow(p: TypeProbe, checkOf: Map<StreamFetch, StreamCheckResult>
       ...others.map((c) => alsoTriedRow(describeTestId(c.path, c.target.source), c.summary)),
       ...p.notes,
     ],
+    ...(passed ? { deciding: { path: best.path, ms: best.answeredInMs ?? 0 } } : {}),
   };
 }
 
@@ -896,23 +989,26 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
       { live: false, livenessError, manifestDetails: rows, mode: "content", perResource },
       "manifest",
     );
-  const unreachable = (reason: string, attempts: Attempt[], parseError?: ParseError) =>
+  const failed = (verdict: string, reason: string, attempts: Attempt[], parseError?: ParseError) =>
     manifestDown(
-      `unreachable (${reason})`,
-      `manifest unreachable (${reason})`,
+      verdict,
+      `manifest ${verdict}`,
       requestRows(manifestPath, attempts, { reason, parseError }),
     );
+  const unreachable = (reason: string, attempts: Attempt[], parseError?: ParseError) =>
+    failed(`unreachable (${reason})`, reason, attempts, parseError);
   let live: Manifest;
   let manifestDetails: DetailRow[];
   let manifestAttempts: Attempt[];
   try {
-    const { status, data, parseError, attempts } = await getJson<unknown>(
-      base + manifestPath,
-      config.timeouts.manifest,
-    );
+    const answer = await getJson<unknown>(base + manifestPath, config.timeouts.manifest, {
+      retry: true,
+    });
+    const { status, data, parseError, attempts } = answer;
     if (!isOkStatus(status)) {
       log.debug({ step: "manifest", status }, "manifest unreachable → DOWN");
-      return unreachable(`HTTP ${status}`, attempts);
+      const { summary, reason } = describeStatus(answer);
+      return failed(`unreachable (${summary})`, reason, attempts);
     }
     if (parseError) {
       const { reason } = describeParseError(parseError);
@@ -941,7 +1037,10 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
     }
   } catch (e) {
     log.debug({ step: "manifest", err: errMsg(e) }, "manifest fetch threw → DOWN");
-    return unreachable(errMsg(e), attemptsOf(e));
+    const { summary, reason } = describeRequestError(e);
+    return summary === "timed out"
+      ? failed(summary, reason, attemptsOf(e))
+      : unreachable(reason, attemptsOf(e));
   }
 
   const norm = normalizeResources(live);
@@ -1003,10 +1102,18 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
     source: "curated",
     origin: "curated",
   }));
-  const metaOnce = once(metaPath, (type: string, id: string) => fetchMeta(base, type, id));
+  const streamPrefixes = streamRes ? effectivePrefixes(streamRes) : [];
+  // No external source can supply IDs in the addon's own ID space, so a failing catalog leaves nothing a user could play either.
+  const ownCatalogsOnly =
+    curated.length === 0 && streamPrefixes.length > 0 && !hasSourceFor(streamPrefixes);
+  const metaOptions = primary === "meta" ? deciding(hasValidMeta) : {};
+  const metaOnce = once(metaPath, (type: string, id: string) =>
+    fetchMeta(base, type, id, metaOptions),
+  );
+  const catalogOptions = !streamRes || ownCatalogsOnly ? deciding(hasRealMeta) : {};
   const catalogOnce: CatalogFetcher = once(
     (_plan: CatalogPlan, path: string) => path,
-    (plan, path) => fetchCatalog(base, plan.catalog, path),
+    (plan, path) => fetchCatalog(base, plan.catalog, path, catalogOptions),
   );
 
   // Step 3: Source test IDs and check the primary resource with them.
@@ -1017,13 +1124,12 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
   let streamCounts: ProbeResult["detail"]["streamCounts"];
   let streamAnswers: Array<ContentAnswer | undefined> = [];
   let metaAnswer: ContentAnswer | undefined;
+  let streamDeciding: Timing[] = [];
+  let metaDeciding: Timing[] = [];
 
   if (streamRes) {
     const advertised = advertisedStreamProbeTypes(streamRes.types);
     const otherStreamTypes = streamRes.types.filter((t) => !isTargetedStreamProbeType(t));
-    const prefixes = effectivePrefixes(streamRes);
-    // No external source can supply IDs in the addon's own ID space, so a failing catalog leaves nothing a user could play either.
-    const ownCatalogsOnly = curated.length === 0 && prefixes.length > 0 && !hasSourceFor(prefixes);
     let borrowed: Promise<TestContent[]> | undefined;
     const ctx: ProbeContext = {
       uuid: addon.uuid,
@@ -1222,6 +1328,7 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
         streamOutcome = { kind: catalogNotice.placeholder, reason: catalogNotice.label };
       }
       const streamDetails = rows.flatMap((row) => row.details);
+      streamDeciding = rows.flatMap((row) => row.deciding ?? []);
       if (streamOutcome.kind === "links") {
         streamDetails.push({ label: "Note", value: "link addon: links only, not content-checked" });
       }
@@ -1296,8 +1403,9 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
         const { status, data, parseError, attempts: routes } = answer;
         const unparsed = isOkStatus(status) ? parseError : undefined;
         const missing = missingMetaFields(data?.meta);
-        const reason = !isOkStatus(status)
-          ? `addon responded with HTTP ${status}`
+        const failedStatus = isOkStatus(status) ? undefined : describeStatus(answer);
+        const reason = failedStatus
+          ? failedStatus.reason
           : unparsed
             ? describeParseError(unparsed).reason
             : !data?.meta
@@ -1311,25 +1419,32 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
           ok,
           summary: ok
             ? "valid"
-            : !isOkStatus(status)
-              ? `HTTP ${status}`
+            : failedStatus
+              ? failedStatus.summary
               : unparsed
                 ? describeParseError(unparsed).summary
                 : "invalid",
-          details: requestRows(f.path, routes, { testId, reason, parseError: unparsed }),
+          details: requestRows(f.path, routes, {
+            testId,
+            reason,
+            parseError: unparsed,
+            note: softBlockNote(answer),
+          }),
         });
+        metaDeciding = [{ path: f.path, ms: answerTime(answer) }];
         log.debug(
           { step: "meta", ok, status, type: test.type, id: test.id },
           `meta check ${ok ? "ok" : "fail"}`,
         );
       } else {
+        const { summary, reason } = f.failure ?? { summary: "unreachable", reason: undefined };
         perResource.push({
           resource: "meta",
           ok: false,
-          summary: "unreachable",
-          details: requestRows(f.path, f.attempts, { testId, reason: f.error }),
+          summary,
+          details: requestRows(f.path, f.attempts, { testId, reason }),
         });
-        log.debug({ step: "meta", ok: false, err: f.error }, "meta fetch threw");
+        log.debug({ step: "meta", ok: false, err: reason }, "meta fetch threw");
       }
     } else if (pool.length > 0 && primary !== "meta") {
       perResource.push({
@@ -1389,6 +1504,16 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
 
   // Step 5: Verdict from the primary resource.
   const primaryResult = perResource.find((r) => r.resource === primary);
+  if (primaryResult?.ok) {
+    markSlow(
+      primaryResult,
+      primary === "stream"
+        ? streamDeciding
+        : primary === "catalog"
+          ? walks.flatMap((w) => w.deciding ?? [])
+          : metaDeciding,
+    );
+  }
   const okResources = perResource.filter((r) => r.ok);
   const message =
     okResources.length > 0
