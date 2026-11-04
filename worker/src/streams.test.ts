@@ -4,6 +4,7 @@ import {
   placeholderKind,
   placeholderMeta,
   repeatedFingerprints,
+  strongestPlaceholder,
   type StreamClass,
 } from "./streams.js";
 
@@ -128,8 +129,18 @@ describe("classifyStream", () => {
     [{ url: "https://x.test/a.mp4", title: "Acces blocat" }, "error"],
     [
       { url: "https://x.test/a.mp4", title: "[⛔️] Non-debrid searches disabled on ElfHosted" },
-      "error",
+      "needs-config",
     ],
+    [
+      {
+        url: "https://comet.test",
+        name: "[INFO] Comet",
+        description: "Direct torrent playback is disabled on this server.",
+      },
+      "needs-config",
+    ],
+    [{ externalUrl: "https://x.test", title: "⚠️ Subscription Ended" }, "needs-config"],
+    [{ externalUrl: "https://x.test", title: "Your API key has expired" }, "error"],
     [{ externalUrl: "https://x.test", title: "MovieBox ❌ Request failed" }, "error"],
     [{ url: "https://x.test/a.mp4", title: "MediaFusion rate-limit exceeded" }, "error"],
     [{ externalUrl: "https://x.test", title: "Persian Satellite [SUSPENDED]" }, "error"],
@@ -207,6 +218,28 @@ describe("placeholderMeta", () => {
   });
 
   it.each([
+    [{ id: "pictorium:notice:missing-tmdb-key", name: "Chiave TMDB richiesta" }, "needs-config"],
+    [{ id: "upl:invalid_apikey", name: "⚠️ Invalid API Key" }, "needs-config"],
+    [{ id: "streamed:nebula-shared-free-expired", name: "Private manifest required" }, "error"],
+    [{ id: "suspended-notice-movie", name: "⚠️ SERVICE SUSPENDED" }, "error"],
+    [{ id: "scary-news-donate-qr", name: "❤️ Support Scary Only — Scan to Donate" }, "no-content"],
+    [{ id: "ir:promo-unlock", name: "🎁 Offers" }, "needs-config"],
+    [{ id: "tv:placeholder-z-eventi", name: "Nessuno Stream disponibile oggi" }, "no-content"],
+  ])("reads %j as %s, the stronger of its text and its ID", (meta, kind) => {
+    expect(placeholderMeta({ type: "movie", ...meta })?.placeholder).toBe(kind);
+  });
+
+  it("labels a notice by its name", () => {
+    expect(
+      placeholderMeta({
+        id: "pictorium:notice:missing-tmdb-key",
+        type: "movie",
+        name: "Chiave TMDB\nrichiesta",
+      })?.label,
+    ).toBe("Chiave TMDB richiesta");
+  });
+
+  it.each([
     [{ id: "tt0111161", type: "movie", name: "The Shawshank Redemption" }],
     [{ id: "kitsu:7442", type: "anime", name: "Attack on Titan" }],
     [{ id: "tubi:515934", type: "movie", name: "Tom and Jerry" }],
@@ -234,5 +267,25 @@ describe("repeatedFingerprints", () => {
 
   it("needs two responses to compare", () => {
     expect(repeatedFingerprints([of([a, a])]).size).toBe(0);
+  });
+});
+
+describe("strongestPlaceholder", () => {
+  it("prefers an error over a plea to configure over noise, keeping the first of equals", () => {
+    const of = (placeholder: "error" | "needs-config" | "no-content", label: string) => ({
+      placeholder,
+      label,
+    });
+    expect(
+      strongestPlaceholder([
+        of("no-content", "a"),
+        of("needs-config", "b"),
+        of("needs-config", "c"),
+      ]),
+    ).toEqual(of("needs-config", "b"));
+    expect(strongestPlaceholder([of("needs-config", "b"), of("error", "d")])).toEqual(
+      of("error", "d"),
+    );
+    expect(strongestPlaceholder([])).toBeUndefined();
   });
 });
