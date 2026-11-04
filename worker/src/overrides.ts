@@ -17,7 +17,10 @@ export interface AddonOverride {
    * The pin wins over any content verdict; its value is the reason shown on the status page.
    */
   needsConfig?: string;
-  /** Fixed test IDs for an addon whose scope no ID source covers; the first of each type its stream resource advertises is probed before any other source. */
+  /**
+   * Fixed test IDs for an addon whose scope no ID source covers; the first of each type its stream resource advertises is probed before any other source.
+   * A subtitles-only addon is asked for them as they are, so a series ID names its episode, and answering no subtitles for every one of them is DOWN: name only titles its niche must carry.
+   */
   testIds?: Array<{ type: string; id: string }>;
   /** The addon answers the same streams for every title by design (a status board), so a stream repeated across titles isn't a placeholder; the value says why. */
   sameStreamsForEveryTitle?: string;
@@ -130,6 +133,28 @@ export const OVERRIDES: Readonly<Record<string, AddonOverride>> = {
   "730c1070-9dcf-4887-8393-922ddf078191": {
     name: "yifysubtitles subtitles by dexter21767",
     testConfig: "english",
+    testIds: [
+      { type: "movie", id: "tt1375666" },
+      { type: "movie", id: "tt0468569" },
+    ],
+  },
+  "72f03433-11a9-4d1f-aad9-9993f467c191": {
+    name: "TR Altyazı",
+    testIds: [
+      { type: "movie", id: "tt0468569" },
+      { type: "series", id: "tt0903747:1:1" },
+    ],
+  },
+  "34d690d9-0cac-40dd-b840-30bdee7a2242": {
+    name: "Ktuvit.me Subtitles",
+    testIds: [
+      { type: "movie", id: "tt1375666" },
+      { type: "series", id: "tt0903747:1:1" },
+    ],
+  },
+  "666b6525-9280-4d27-ac87-55b7e30dce64": {
+    name: "One Pace PT-BR Subs",
+    testIds: [{ type: "series", id: "RO_1" }],
   },
 };
 
