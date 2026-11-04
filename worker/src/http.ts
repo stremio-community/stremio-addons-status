@@ -41,6 +41,8 @@ export interface ParseError {
   title?: string;
   /** The start of the body, whitespace collapsed and URLs and key-like tokens dropped, since a configured addon may echo its config. */
   excerpt: string;
+  /** Set when the body ran past this many bytes, so it was cut off unread. */
+  overLimit?: number;
 }
 
 export interface JsonResult<T> {
@@ -108,6 +110,13 @@ export function describeParseError(e: ParseError): {
   details: DetailRow[];
 } {
   const contentType = { label: "Content-Type", value: e.contentType ?? "none" };
+  if (e.overLimit !== undefined) {
+    return {
+      summary: "response too large",
+      reason: `response is larger than ${formatBytes(e.overLimit)}`,
+      details: [contentType],
+    };
+  }
   const body = e.title
     ? { label: "Page title", value: e.title }
     : { label: "Body", value: e.excerpt || "empty" };
@@ -116,6 +125,35 @@ export function describeParseError(e: ParseError): {
     reason: e.html ? "HTML page instead of JSON" : "response is not valid JSON",
     details: [contentType, body],
   };
+}
+
+function formatBytes(n: number): string {
+  return n >= 1_000_000 ? `${n / 1_000_000} MB` : n >= 1_000 ? `${n / 1_000} KB` : `${n} bytes`;
+}
+
+/** The body's first `maxBytes` bytes, cancelling the rest of the download. */
+async function readCapped(
+  res: Awaited<ReturnType<typeof fetch>>,
+  maxBytes: number,
+): Promise<{ bytes: Uint8Array; truncated: boolean }> {
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  let truncated = false;
+  const reader = res.body?.getReader();
+  while (reader) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (total + value.length > maxBytes) {
+      chunks.push(value.subarray(0, maxBytes - total));
+      total = maxBytes;
+      truncated = true;
+      await reader.cancel();
+      break;
+    }
+    chunks.push(value);
+    total += value.length;
+  }
+  return { bytes: Buffer.concat(chunks), truncated };
 }
 
 function redirectOf(requested: string, final: string): string | undefined {
@@ -130,6 +168,7 @@ async function fetchJson<T>(
   url: string,
   timeout: number,
   dispatcher: Dispatcher | undefined,
+  maxBytes: number | undefined,
 ): Promise<Answer<T> & { redirect?: string; retryAfterMs?: number }> {
   const res = await fetch(url, {
     headers: { "User-Agent": USER_AGENT, Accept: "application/json" },
@@ -137,10 +176,26 @@ async function fetchJson<T>(
     signal: AbortSignal.timeout(timeout),
     dispatcher,
   });
-  const text = await res.text();
   const redirect = redirectOf(url, res.url);
   const retryAfterMs = retryAfterOf(res.headers.get("retry-after"));
   const extra = { redirect, ...(retryAfterMs !== undefined ? { retryAfterMs } : {}) };
+  let text: string;
+  if (maxBytes === undefined) {
+    text = await res.text();
+  } else {
+    const { bytes, truncated } = await readCapped(res, maxBytes);
+    if (truncated) {
+      const contentType = res.headers.get("content-type");
+      const parseError: ParseError = {
+        html: false,
+        ...(contentType ? { contentType: excerptOf(contentType) } : {}),
+        excerpt: "",
+        overLimit: maxBytes,
+      };
+      return { status: res.status, data: undefined, parseError, ...extra };
+    }
+    text = new TextDecoder().decode(bytes);
+  }
   try {
     return { status: res.status, data: JSON.parse(text) as T, ...extra };
   } catch {
@@ -172,6 +227,8 @@ export interface GetJsonOptions<T> {
   retry?: boolean;
   /** Whether a parsed 2xx answer has content worth having; an unusable one sends the request to the other route as well. */
   usable?: (data: T) => boolean;
+  /** Stop reading a body past this many bytes and report it as too large, so a runaway answer can't exhaust memory. */
+  maxBytes?: number;
 }
 
 /** How settled one try leaves the request; the best try wins, the latest among equals. */
@@ -201,7 +258,7 @@ interface Try<T> {
 export async function getJson<T = unknown>(
   url: string,
   timeout: number,
-  { retry = false, usable }: GetJsonOptions<T> = {},
+  { retry = false, usable, maxBytes }: GetJsonOptions<T> = {},
 ): Promise<JsonResult<T>> {
   const attempts: Attempt[] = [];
   const tries: Try<T>[] = [];
@@ -217,7 +274,7 @@ export async function getJson<T = unknown>(
     const start = Date.now();
     let fetched: Awaited<ReturnType<typeof fetchJson<T>>>;
     try {
-      fetched = await fetchJson<T>(url, timeout, dispatcherOf(route));
+      fetched = await fetchJson<T>(url, timeout, dispatcherOf(route), maxBytes);
     } catch (error) {
       const timedOut = isTimeout(error);
       attempts.push({
@@ -281,6 +338,64 @@ export async function getJson<T = unknown>(
       ...(won.rank === Rank.Final && softBlocked ? { softBlockedOn: softBlocked } : {}),
     };
   }
+}
+
+/** The start of a file, as far as one request for it got. */
+export interface Sample {
+  status: number;
+  /** At most the `maxBytes` asked for, whether or not the server honoured the range. */
+  bytes: Uint8Array;
+  contentType?: string;
+  attempts: Attempt[];
+}
+
+/**
+ * Range-GET the first `maxBytes` of a file, WARP-first with a direct fallback like getJson, to sniff it without downloading it.
+ * The direct route is tried when WARP fails, answers non-2xx or serves an HTML page, which may be a challenge for its egress IPs.
+ * Throws a RequestFailedError only if every route throws.
+ */
+export async function getSample(url: string, timeout: number, maxBytes: number): Promise<Sample> {
+  const attempts: Attempt[] = [];
+  let kept: { rank: number; sample: Omit<Sample, "attempts"> } | undefined;
+  for (const route of proxy ? (["WARP", "direct"] as const) : (["direct"] as const)) {
+    const start = Date.now();
+    try {
+      const res = await fetch(url, {
+        headers: { "User-Agent": USER_AGENT, Range: `bytes=0-${maxBytes - 1}` },
+        redirect: "follow",
+        signal: AbortSignal.timeout(timeout),
+        dispatcher: dispatcherOf(route),
+      });
+      const { bytes } = await readCapped(res, maxBytes);
+      const redirect = redirectOf(url, res.url);
+      attempts.push({
+        route,
+        status: res.status,
+        durationMs: Date.now() - start,
+        ...(redirect ? { redirect } : {}),
+      });
+      const contentType = res.headers.get("content-type") ?? undefined;
+      const html = /\btext\/html\b/i.test(contentType ?? "");
+      const rank = isSuccess(res.status) ? (html ? 1 : 2) : 0;
+      if (!kept || rank >= kept.rank) {
+        kept = {
+          rank,
+          sample: { status: res.status, bytes, ...(contentType ? { contentType } : {}) },
+        };
+      }
+      if (rank === 2) break;
+    } catch (error) {
+      const timedOut = isTimeout(error);
+      attempts.push({
+        route,
+        error: describeError(error, timeout),
+        ...(timedOut ? { timedOut } : {}),
+        durationMs: Date.now() - start,
+      });
+    }
+  }
+  if (!kept) throw new RequestFailedError(attempts.at(-1)?.error ?? "request failed", attempts);
+  return { ...kept.sample, attempts };
 }
 
 /** The route whose last try failed at the transport level, preferring one that timed out: a slow addon may answer the second time. */

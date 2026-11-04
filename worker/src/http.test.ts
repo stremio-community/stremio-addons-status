@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 /** `url` is where redirects ended up; it defaults to the requested URL. */
 type FakeResponse = {
   status: number;
-  body: string;
+  body: string | Uint8Array;
   contentType?: string;
   url?: string;
   retryAfter?: string;
@@ -16,6 +16,8 @@ const h = vi.hoisted(() => ({
     handler: (_url: string, _viaProxy: boolean): FakeResponse => ({ status: 200, body: "{}" }),
     calls: [] as boolean[],
     sleeps: [] as number[],
+    headers: [] as Array<Record<string, string>>,
+    cancelled: 0,
   },
 }));
 
@@ -28,10 +30,23 @@ vi.mock("./utils.js", async (importOriginal) => ({
 
 vi.mock("fetch-socks", () => ({ socksDispatcher: () => h.PROXY }));
 vi.mock("undici", () => ({
-  fetch: async (url: string, opts: { dispatcher?: unknown }) => {
+  fetch: async (url: string, opts: { dispatcher?: unknown; headers?: Record<string, string> }) => {
     const viaProxy = opts?.dispatcher === h.PROXY;
     h.state.calls.push(viaProxy);
+    h.state.headers.push(opts?.headers ?? {});
     const r = h.state.handler(url, viaProxy);
+    const bytes = typeof r.body === "string" ? new TextEncoder().encode(r.body) : r.body;
+    // Served in 1 KB chunks, so a capped read stops partway through the body.
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (let i = 0; i < bytes.length; i += 1024)
+          controller.enqueue(bytes.subarray(i, i + 1024));
+        controller.close();
+      },
+      cancel() {
+        h.state.cancelled++;
+      },
+    });
     return {
       status: r.status,
       url: r.url ?? url,
@@ -39,7 +54,8 @@ vi.mock("undici", () => ({
         ...(r.contentType ? { "content-type": r.contentType } : {}),
         ...(r.retryAfter !== undefined ? { "retry-after": r.retryAfter } : {}),
       }),
-      text: async () => r.body,
+      text: async () => new TextDecoder().decode(bytes),
+      body,
     };
   },
 }));
@@ -48,6 +64,7 @@ vi.mock("undici", () => ({
 process.env.PROXY_URL = "socks5://warp:1080";
 const {
   getJson,
+  getSample,
   attemptsOf,
   describeParseError,
   describeRequestError,
@@ -69,6 +86,8 @@ beforeEach(() => {
   h.state.handler = () => ({ status: 200, body: "{}" });
   h.state.calls = [];
   h.state.sleeps = [];
+  h.state.headers = [];
+  h.state.cancelled = 0;
 });
 
 /** Answers from a per-route queue, so a test can script what each successive try on a route gets. */
@@ -559,5 +578,89 @@ describe("describeParseError", () => {
       { label: "Content-Type", value: "none" },
       { label: "Body", value: "empty" },
     ]);
+  });
+});
+
+describe("getJson maxBytes option", () => {
+  it("parses a body within the cap", async () => {
+    h.state.handler = () => json(200, { subtitles: [] });
+    const r = await getJson("http://addon/subtitles/movie/tt1.json", 1000, { maxBytes: 4000 });
+    expect(r.data).toEqual({ subtitles: [] });
+    expect(r.parseError).toBeUndefined();
+  });
+
+  it("stops reading a body past the cap and reports it as too large (GTSubs' 9.1 MB answer)", async () => {
+    const entries = Array.from({ length: 500 }, (_, i) => ({
+      id: `info:${i}`,
+      lang: "eng",
+      url: "x",
+    }));
+    h.state.handler = () => json(200, { subtitles: entries });
+    const r = await getJson("http://addon/subtitles/movie/tt1.json", 1000, { maxBytes: 4000 });
+    expect(r.status).toBe(200);
+    expect(r.data).toBeUndefined();
+    expect(r.parseError).toEqual({
+      html: false,
+      contentType: "application/json",
+      excerpt: "",
+      overLimit: 4000,
+    });
+    expect(h.state.cancelled).toBe(1);
+    expect(h.state.calls).toEqual([true]);
+    expect(describeParseError(r.parseError!)).toEqual({
+      summary: "response too large",
+      reason: "response is larger than 4 KB",
+      details: [{ label: "Content-Type", value: "application/json" }],
+    });
+  });
+});
+
+describe("getSample", () => {
+  it("asks for a byte range and keeps at most the cap, even when the server sends the whole file", async () => {
+    const file = "1\n00:00:01,000 --> 00:00:02,000\nHello\n\n".repeat(200);
+    h.state.handler = () => ({ status: 200, body: file, contentType: "application/x-subrip" });
+    const r = await getSample("http://files/sub.srt", 1000, 2048);
+    expect(h.state.headers[0]).toMatchObject({ Range: "bytes=0-2047" });
+    expect(r.status).toBe(200);
+    expect(r.bytes.length).toBe(2048);
+    expect(new TextDecoder().decode(r.bytes)).toBe(file.slice(0, 2048));
+    expect(r.contentType).toBe("application/x-subrip");
+    expect(h.state.calls).toEqual([true]);
+  });
+
+  it("tries direct when WARP serves an HTML page, keeping the direct file", async () => {
+    h.state.handler = (_url, viaProxy) =>
+      viaProxy
+        ? { status: 200, body: CHALLENGE_PAGE, contentType: "text/html" }
+        : { status: 206, body: "WEBVTT\n", contentType: "text/vtt" };
+    const r = await getSample("http://files/sub.vtt", 1000, 2048);
+    expect(r.status).toBe(206);
+    expect(new TextDecoder().decode(r.bytes)).toBe("WEBVTT\n");
+    expect(routesOf(r.attempts)).toEqual([
+      { route: "WARP", status: 200, error: undefined },
+      { route: "direct", status: 206, error: undefined },
+    ]);
+  });
+
+  it("keeps the non-2xx answer when no route serves the file", async () => {
+    h.state.handler = (_url, viaProxy) => {
+      if (viaProxy) return { status: 404, body: "Not found" };
+      throw new Error("ECONNRESET");
+    };
+    const r = await getSample("http://files/sub.srt", 1000, 2048);
+    expect(r.status).toBe(404);
+    expect(routesOf(r.attempts)).toEqual([
+      { route: "WARP", status: 404, error: undefined },
+      { route: "direct", status: undefined, error: "ECONNRESET" },
+    ]);
+  });
+
+  it("throws every attempt when both routes fail at the transport level", async () => {
+    h.state.handler = () => {
+      throw new Error("ECONNREFUSED");
+    };
+    const err = await getSample("http://files/sub.srt", 1000, 2048).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(RequestFailedError);
+    expect(attemptsOf(err)).toHaveLength(2);
   });
 });
