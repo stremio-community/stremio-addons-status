@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { OVERRIDES, probeBaseUrl } from "./overrides.js";
+import { OVERRIDES, overrideFor, probeBaseUrl } from "./overrides.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -20,6 +20,14 @@ describe("OVERRIDES", () => {
       ).toBeDefined();
       for (const t of o.testIds ?? []) expect(t.id, uuid).not.toBe("");
     }
+  });
+});
+
+describe("needsConfig pins", () => {
+  it("pins Watchario, whose streams come only from the user's account", () => {
+    expect(overrideFor("673ec48b-7b98-4039-a87f-28223f598928")?.needsConfig).toMatch(
+      /Watchario account/,
+    );
   });
 });
 

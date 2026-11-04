@@ -89,6 +89,10 @@ export const OVERRIDES: Readonly<Record<string, AddonOverride>> = {
     name: "Stremio Status",
     sameStreamsForEveryTitle: "it shows the same addon status cards on every title",
   },
+  "673ec48b-7b98-4039-a87f-28223f598928": {
+    name: "Watchario",
+    needsConfig: "streams come from sources linked to the user's Watchario account",
+  },
   "47c623dd-5a03-425e-aff9-41505675a7b9": {
     name: "M_Rulz Scraper (Telugu)",
     needsConfig: "routes exist only under a personal token",
