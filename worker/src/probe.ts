@@ -43,7 +43,7 @@ import {
   resourceAccepts,
   type NormResource,
 } from "./manifest.js";
-import { overrideFor, probeBaseUrl } from "./overrides.js";
+import { type AddonOverride, overrideFor, probeBaseUrl } from "./overrides.js";
 import {
   classifyStream,
   isRequestLink,
@@ -785,8 +785,38 @@ function isTargetedStreamProbeType(type: string): type is TargetedStreamProbeTyp
   return (STREAM_PROBE_TYPES as readonly string[]).includes(type);
 }
 
+const CATALOG_ADDON_WORDING =
+  /\b(?:catalog|metadata)(?:\s+(?:and|&)\s+(?:catalog|metadata))?\s+add-?on\b/i;
+
+/** stremio-addons.net categories that promise playable streams. */
+const STREAM_CATEGORIES = new Set([
+  "http streams",
+  "torrents",
+  "debrid support",
+  "usenet",
+  "live tv",
+  "radios",
+]);
+
 /**
- * A catalog addon whose stream resource is optional or empty by design (debrid-only, a stub) answers no streams at all, without error, even for its own titles.
+ * Why an addon's streams may be empty by design, if anything says so: without that, empty streams can't be told from a dead stream source.
+ */
+function optionalStreamsReason(
+  live: Manifest,
+  categories: readonly string[],
+  override: AddonOverride | undefined,
+): string | undefined {
+  if (override?.streamsOptional) return override.streamsOptional;
+  if (live.behaviorHints?.configurable === true) return "configurable";
+  if (CATALOG_ADDON_WORDING.test(live.description ?? "")) return "described as a catalog addon";
+  if (categories.includes("metadata") && !categories.some((c) => STREAM_CATEGORIES.has(c))) {
+    return "listed as a metadata addon";
+  }
+  return undefined;
+}
+
+/**
+ * A catalog addon whose streams are optional answers no streams at all, without error, even for its own titles.
  * Only for IMDb titles, which the user's other addons stream: an addon with its own ID space is the only one that can stream its titles, so answering nothing means it is broken.
  * Notices don't qualify either: an addon answering "no data" for every title has a stream resource that is its point.
  */
@@ -1744,12 +1774,12 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
             : "link addon: links only, not content-checked",
         });
       }
-      // A catalog addon whose stream resource answers nothing for its own titles is judged on its catalogs.
-      if (streamOutcome.kind === "down" && isAuxiliaryStream(checks, walks)) {
+      const optional = optionalStreamsReason(live, addon.categories, override);
+      if (streamOutcome.kind === "down" && optional && isAuxiliaryStream(checks, walks)) {
         primary = "catalog";
         streamDetails.push({
           label: "Note",
-          value: "no streams for the addon's own catalog titles; judged on its catalogs",
+          value: `no streams for the addon's own catalog titles (${optional}); judged on its catalogs`,
         });
       }
       perResource.push({

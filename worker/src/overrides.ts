@@ -26,6 +26,8 @@ export interface AddonOverride {
   translatesSubtitles?: string;
   /** The addon answers the same streams for every title by design (a status board), so a stream repeated across titles isn't a placeholder; the value says why. */
   sameStreamsForEveryTitle?: string;
+  /** The addon's streams are optional or empty by design, though nothing in its manifest or listing says so, so empty streams for its own IMDb titles judge it on its catalogs; its value is the reason shown on the status page. */
+  streamsOptional?: string;
 }
 
 export const OVERRIDES: Readonly<Record<string, AddonOverride>> = {
