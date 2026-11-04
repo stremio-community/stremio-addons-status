@@ -99,6 +99,13 @@ describe("classifyStream", () => {
       "needs-config",
     ],
     [{ externalUrl: "https://x.test", title: "Private manifest required" }, "needs-config"],
+    [
+      {
+        externalUrl: "https://x.test",
+        title: "Private manifest required · shared free manifest ended on 11 October 2026",
+      },
+      "error",
+    ],
     [{ externalUrl: "https://x.test", title: "Wymagana konfiguracja" }, "needs-config"],
     [
       {

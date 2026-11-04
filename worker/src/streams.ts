@@ -32,10 +32,32 @@ const PLAYABLE_FIELDS = [
 ] as const satisfies readonly (keyof Stream)[];
 
 /**
- * Placeholder wording, checked in order, so a needs-config phrase wins over an error phrase in the same text ("OBSOLETE CONFIGURATION, PLEASE RE-CONFIGURE").
+ * Placeholder wording, checked in order, so an addon saying it is retired or refusing wins over its plea to configure ("Private manifest required … shared free manifest ended").
  * Phrases rather than bare words, because release names carry arbitrary words ("Sign.of.the.Times", "Not Parent Safe").
  */
 const PLACEHOLDER_PATTERNS: ReadonlyArray<readonly [PlaceholderKind, RegExp]> = [
+  [
+    "error",
+    new RegExp(
+      [
+        String.raw`\bdeprecated\b`,
+        String.raw`\bsuspended\b`,
+        String.raw`\bshut(ting)? down\b`,
+        String.raw`\bdiscontinued\b`,
+        String.raw`\bno longer (available|supported|maintained|working)`,
+        String.raw`\breinstall`,
+        String.raw`\bnew addon link\b`,
+        String.raw`\b(subscription|token|key|session|trial|manifest|license|account)s? (has )?(expired|ended)\b`,
+        String.raw`\bunauthori[sz]ed\b|\bnot authori[sz]ed\b|\bno autorizad|\bnão autorizad`,
+        String.raw`\baccess denied\b|\bacces(so)? (blocat|denegado|negado)\b`,
+        String.raw`\bdisabled\b`,
+        String.raw`\brequest failed\b|\bauth(entication)? error\b`,
+        String.raw`\brate[ -]?limit`,
+        String.raw`\btoo many requests\b`,
+      ].join("|"),
+      "iu",
+    ),
+  ],
   [
     "needs-config",
     new RegExp(
@@ -53,29 +75,6 @@ const PLACEHOLDER_PATTERNS: ReadonlyArray<readonly [PlaceholderKind, RegExp]> = 
         String.raw`\bmediaflow\b`,
         String.raw`\bactivar\b|\baktivál|\bativar\b`,
         String.raw`\brichiest[ao]\b|\bwymagan`,
-      ].join("|"),
-      "iu",
-    ),
-  ],
-  [
-    "error",
-    new RegExp(
-      [
-        String.raw`\bdeprecated\b`,
-        String.raw`\bsuspended\b`,
-        String.raw`\bshut(ting)? down\b`,
-        String.raw`\bdiscontinued\b`,
-        String.raw`\bno longer (available|supported|maintained|working)`,
-        String.raw`\bobsolete\b`,
-        String.raw`\breinstall`,
-        String.raw`\bnew addon link\b`,
-        String.raw`\b(subscription|token|key|session|trial|manifest|license|account)s? (has )?(expired|ended)\b`,
-        String.raw`\bunauthori[sz]ed\b|\bnot authori[sz]ed\b|\bno autorizad|\bnão autorizad`,
-        String.raw`\baccess denied\b|\bacces(so)? (blocat|denegado|negado)\b`,
-        String.raw`\bdisabled\b`,
-        String.raw`\brequest failed\b|\bauth(entication)? error\b`,
-        String.raw`\brate[ -]?limit`,
-        String.raw`\btoo many requests\b`,
       ].join("|"),
       "iu",
     ),
