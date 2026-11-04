@@ -735,6 +735,8 @@ interface ProbeContext {
   /** Stream IDs already requested, so the same title isn't asked for twice. */
   requested: Set<string>;
   unanswered: number;
+  /** Set once a stream request timed out on any route: retrying later ones would mostly double the wait on an addon that hangs. */
+  streamTimedOut: boolean;
 }
 
 /** Fetch each key once, sharing the pending answer with every later caller. */
@@ -806,8 +808,7 @@ async function fetchStream(ctx: ProbeContext, target: StreamTarget): Promise<Str
     const answer = await getJson<StreamResponse>(
       ctx.base + path,
       config.timeouts.stream,
-      // After one request went unanswered, a retry mostly doubles the wait on an addon that hangs.
-      deciding((data) => hasPlayableStream(data, ctx.base), ctx.unanswered === 0),
+      deciding((data) => hasPlayableStream(data, ctx.base), !ctx.streamTimedOut),
     );
     const { status, data, parseError, attempts } = answer;
     const raw = Array.isArray(data?.streams) ? data!.streams! : [];
@@ -855,6 +856,7 @@ async function tryCandidates(
     const f = await fetchStream(ctx, target);
     p.fetches.push(f);
     if (f.status === undefined) ctx.unanswered++;
+    if (f.attempts.some((a) => a.timedOut)) ctx.streamTimedOut = true;
     const check = judgeStreamFetch(f, NO_REPEATS, ctx.configurable);
     ctx.log.debug(
       {
@@ -1148,6 +1150,7 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
         })),
       requested: new Set(),
       unanswered: 0,
+      streamTimedOut: false,
     };
 
     const declares = (type: string) => plans.some((plan) => sameType(plan.catalog.type, type));

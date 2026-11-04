@@ -2937,7 +2937,7 @@ describe("probe transport", () => {
     expect(stream?.details).toContainEqual({ label: "Reason", value: "timed out after 30000ms" });
   });
 
-  it("stops retrying stream requests once one went unanswered, so a hanging addon costs at most one retry (Hellspy)", async () => {
+  it("stops retrying stream requests once one timed out, so a hanging addon costs at most one retry (Hellspy)", async () => {
     const m = scraperAddon();
     idsourcesMock.hasSourceFor = () => true;
     idsourcesMock.candidatesFor = async () =>
@@ -2955,6 +2955,34 @@ describe("probe transport", () => {
     expect(requestOptions.get(`${BASE}/stream/movie/tt1.json`)?.retry).toBe(true);
     expect(requestOptions.get(`${BASE}/stream/movie/tt2.json`)?.retry).toBe(false);
     expect(requestOptions.has(`${BASE}/stream/movie/tt3.json`)).toBe(false);
+  });
+
+  it("stops retrying stream requests once one timed out on a route, even when another route answered", async () => {
+    const m = scraperAddon();
+    idsourcesMock.hasSourceFor = () => true;
+    idsourcesMock.candidatesFor = async () => ["tt1", "tt2"].map((id) => ({ type: "movie", id }));
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/stream/",
+        {
+          status: 403,
+          data: undefined,
+          attempts: [
+            attempt("WARP", 403),
+            {
+              route: "direct",
+              error: "timed out after 30000ms",
+              timedOut: true,
+              durationMs: 30000,
+            },
+          ],
+        },
+      ],
+    ]);
+    await probe(m);
+    expect(requestOptions.get(`${BASE}/stream/movie/tt1.json`)?.retry).toBe(true);
+    expect(requestOptions.get(`${BASE}/stream/movie/tt2.json`)?.retry).toBe(false);
   });
 
   it("shows the addon's own JSON error in the reason row (Ruído)", async () => {
