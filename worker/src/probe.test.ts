@@ -301,7 +301,10 @@ describe("probe", () => {
     const r = await probe(m);
     expect(r.success).toBe(true);
     expect(r.message).toContain("stream: series 1 playable of 1");
-    expect(r.message).toContain("meta: valid");
+    expect(r.detail.perResource.find((x) => x.resource === "meta")).toMatchObject({
+      ok: false,
+      summary: "no videos",
+    });
     expect(metaCalls).toBe(1);
   });
 
@@ -928,6 +931,98 @@ describe("probe detail rows", () => {
     ]);
   });
 
+  it("says a meta came back without its wrapper (Nickelodeon)", async () => {
+    const m = addon({
+      types: ["movie"],
+      idPrefixes: ["tmdb"],
+      resources: ["catalog", "meta"],
+      catalogs: [{ type: "movie", id: "nickelodeon_movies", name: "Nickelodeon" }],
+    });
+    const preview = { id: "tmdb:980431", type: "movie", name: "Avatar Aang: The Last Airbender" };
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      ["/catalog/movie/nickelodeon_movies.json", { status: 200, data: { metas: [preview] } }],
+      ["/meta/movie/tmdb:980431.json", { status: 200, data: { ...preview, genres: ["Kids"] } }],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    const meta = r.detail.perResource.find((p) => p.resource === "meta");
+    expect(meta).toMatchObject({ ok: false, summary: "invalid (meta not wrapped)" });
+    expect(meta?.details).toContainEqual({
+      label: "Reason",
+      value: 'meta returned without the {"meta": …} wrapper',
+    });
+  });
+
+  it("flags a stub meta for another ID without failing the catalog addon (Holiday Movies & Shows)", async () => {
+    const m = addon({
+      types: ["movie"],
+      idPrefixes: ["tmdb"],
+      resources: ["catalog", "meta"],
+      catalogs: [{ type: "movie", id: "holiday_movies", name: "Holiday Movies" }],
+    });
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/catalog/movie/holiday_movies.json",
+        {
+          status: 200,
+          data: { metas: [{ id: "tmdb:1273221", type: "movie", name: "Scary Movie" }] },
+        },
+      ],
+      [
+        "/meta/movie/tmdb:1273221.json",
+        {
+          status: 200,
+          data: {
+            meta: {
+              id: "tmdb:1273221.json",
+              type: "movie",
+              name: "Loading...",
+              posterShape: "poster",
+            },
+          },
+        },
+      ],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    const meta = r.detail.perResource.find((p) => p.resource === "meta");
+    expect(meta).toMatchObject({ ok: false, summary: "id mismatch, placeholder" });
+    expect(meta?.details).toEqual(
+      expect.arrayContaining([
+        { label: "Reason", value: "meta id tmdb:1273221.json for request tmdb:1273221" },
+        { label: "Reason", value: "addon says: Loading..." },
+      ]),
+    );
+  });
+
+  it("keeps a meta-primary addon UP when its meta is only flawed, naming the flaw", async () => {
+    const m = addon({
+      types: ["series"],
+      resources: [{ name: "meta", types: ["series"], idPrefixes: ["tt"] }],
+    });
+    overrides.u = { testIds: [{ type: "series", id: "tt0944947" }] };
+    try {
+      router = routes([
+        ["/manifest.json", manifestOk(m.manifest)],
+        [
+          "/meta/series/tt0944947.json",
+          { status: 200, data: { meta: { id: "tt0944947", type: "series", name: "GoT" } } },
+        ],
+      ]);
+      const r = await probe(m);
+      expect(r.success).toBe(true);
+      expect(r.detail.primary).toBe("meta");
+      expect(r.detail.perResource.find((p) => p.resource === "meta")).toMatchObject({
+        ok: true,
+        summary: "valid · no videos",
+      });
+    } finally {
+      delete overrides.u;
+    }
+  });
+
   it("explains an empty catalog whose metas lack required fields", async () => {
     const m = addon({
       types: ["movie"],
@@ -941,11 +1036,29 @@ describe("probe detail rows", () => {
     const r = await probe(m);
     const catalog = r.detail.perResource.find((p) => p.resource === "catalog");
     expect(r.success).toBe(false);
-    expect(catalog?.summary).toBe("empty");
+    expect(catalog?.summary).toBe("invalid (1 meta without type, name)");
     expect(catalog?.details.at(-1)).toEqual({
       label: "Reason",
       value: "none of 1 metas has an id, type and name",
     });
+  });
+
+  it("calls a catalog of metas without names invalid, not empty (TorrentFreaks Top-10)", async () => {
+    const m = addon({
+      types: ["movie"],
+      resources: ["catalog"],
+      catalogs: [{ type: "movie", id: "torrentfreak-movies", name: "TorrentFreak" }],
+    });
+    const metas = Array.from({ length: 100 }, (_, i) => ({ type: "movie", id: `tt${1000 + i}` }));
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      ["/catalog/movie/torrentfreak-movies.json", { status: 200, data: { metas } }],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(false);
+    expect(r.detail.perResource.find((p) => p.resource === "catalog")?.summary).toBe(
+      "invalid (100 metas without name)",
+    );
   });
 });
 

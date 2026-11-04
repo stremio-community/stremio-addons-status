@@ -15,8 +15,15 @@ import {
   type JsonResult,
   type ParseError,
 } from "./http.js";
-import { encodeId, errMsg } from "./utils.js";
+import { encodeId, errMsg, plural } from "./utils.js";
 import { corsAnnotation, STREMIO_WEB_HEADERS } from "./cors.js";
+import {
+  metaBodyDefect,
+  metaDefects,
+  metaFlaws,
+  metasWithout,
+  missingMetaFields,
+} from "./metas.js";
 import { candidatesFor, hasSourceFor, type TestContent } from "./idsources.js";
 import { logger, type Logger } from "./logger.js";
 import {
@@ -64,13 +71,6 @@ interface MetaResponse {
 }
 interface StreamResponse {
   streams?: unknown[];
-}
-
-const META_REQUIRED_FIELDS = ["id", "type", "name"] as const;
-
-function missingMetaFields(m: unknown): string[] {
-  const o = m as Record<string, unknown> | undefined;
-  return META_REQUIRED_FIELDS.filter((f) => typeof o?.[f] !== "string");
 }
 
 function isOkStatus(status: number): boolean {
@@ -185,6 +185,7 @@ interface StreamTarget extends Candidate {
 
 /** One catalog request and what it offered to test with. */
 interface CatalogAttempt {
+  catalog: ManifestCatalog;
   /** The catalog's declared type. */
   type: string;
   path: string;
@@ -198,6 +199,8 @@ interface CatalogAttempt {
   notice?: MetaNotice;
   /** Unset when the request threw. */
   answer?: ContentAnswer;
+  /** The metas a parsed 2xx answer listed, and those lacking a required field. */
+  metas?: { total: number; invalid: number; missing: string[] };
 }
 
 /** A catalog the worker can query, with the requests to try in order: each later one runs only when the previous came back empty. */
@@ -280,7 +283,7 @@ async function fetchCatalog(
   path: string,
   options: GetJsonOptions<CatalogResponse>,
 ): Promise<CatalogAttempt> {
-  const attempt = { type: catalog.type, path, items: [] as Candidate[] };
+  const attempt = { catalog, type: catalog.type, path, items: [] as Candidate[] };
   try {
     const result = await getJson<CatalogResponse>(base + path, config.timeouts.catalog, options);
     const { status, data, parseError, attempts } = result;
@@ -307,16 +310,21 @@ async function fetchCatalog(
     }
     const metas = Array.isArray(data?.metas) ? data.metas : [];
     const valid = metas.filter((m) => missingMetaFields(m).length === 0);
+    const { invalid, missing } = metaDefects(metas);
+    const counted = { ...answered, metas: { total: metas.length, invalid, missing } };
     if (valid.length === 0) {
       const reason =
         metas.length === 0
           ? "returned no metas"
           : `none of ${metas.length} metas has an id, type and name`;
       return {
-        ...answered,
+        ...counted,
         kind: "empty",
         ok: false,
-        summary: "empty",
+        summary:
+          metas.length === 0
+            ? "empty"
+            : `invalid (${metasWithout(invalid, metas.length, missing)})`,
         details: requestRows(path, attempts, { reason, note }),
       };
     }
@@ -324,7 +332,7 @@ async function fetchCatalog(
     if (real.length === 0) {
       const notice = strongestPlaceholder(valid.map((m) => placeholderMeta(m)!))!;
       return {
-        ...answered,
+        ...counted,
         kind: "notices",
         // A catalog of donation or news tiles still answers; it only has nothing to test with.
         ok: notice.placeholder === "no-content",
@@ -334,7 +342,7 @@ async function fetchCatalog(
       };
     }
     return {
-      ...answered,
+      ...counted,
       kind: "items",
       ok: true,
       summary: `${metas.length} metas`,
@@ -513,10 +521,6 @@ function judgedStream(c: StreamClass, repeated: Set<string>, configurable: boole
     repeated: true,
   };
   return placeholder;
-}
-
-function plural(n: number, word: string): string {
-  return `${n} ${word}${n === 1 ? "" : "s"}`;
 }
 
 function judgeStreamFetch(
@@ -1409,34 +1413,35 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
         metaAnswer = answer;
         const { status, data, parseError, attempts: routes } = answer;
         const unparsed = isOkStatus(status) ? parseError : undefined;
-        const missing = missingMetaFields(data?.meta);
-        const failedStatus = isOkStatus(status) ? undefined : describeStatus(answer);
-        const reason = failedStatus
-          ? failedStatus.reason
+        const defect = !isOkStatus(status)
+          ? describeStatus(answer)
           : unparsed
-            ? describeParseError(unparsed).reason
-            : !data?.meta
-              ? "response has no meta object"
-              : missing.length > 0
-                ? `meta missing ${missing.join(", ")}`
-                : undefined;
-        const ok = reason === undefined;
+            ? describeParseError(unparsed)
+            : metaBodyDefect(data);
+        const meta = validMeta(f);
+        const flaws = defect || !meta ? [] : metaFlaws(meta, test.type, test.id);
+        // A flawed meta Stremio can still show is a problem worth naming, never one that decides the verdict.
+        const ok = !defect && (flaws.length === 0 || primary === "meta");
+        const flawed = flaws.map((x) => x.summary).join(", ");
         perResource.push({
           resource: "meta",
           ok,
-          summary: ok
-            ? "valid"
-            : failedStatus
-              ? failedStatus.summary
-              : unparsed
-                ? describeParseError(unparsed).summary
-                : "invalid",
-          details: requestRows(f.path, routes, {
-            testId,
-            reason,
-            parseError: unparsed,
-            note: softBlockNote(answer),
-          }),
+          summary: defect
+            ? defect.summary
+            : flaws.length === 0
+              ? "valid"
+              : ok
+                ? `valid · ${flawed}`
+                : flawed,
+          details: [
+            ...requestRows(f.path, routes, {
+              testId,
+              reason: defect?.reason,
+              parseError: unparsed,
+              note: softBlockNote(answer),
+            }),
+            ...flaws.map((x) => ({ label: "Reason", value: x.reason })),
+          ],
         });
         metaDeciding = [{ path: f.path, ms: answerTime(answer) }];
         log.debug(
