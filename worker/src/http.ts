@@ -80,7 +80,8 @@ function describeError(e: unknown, timeout: number): string {
 
 const EXCERPT_LENGTH = 80;
 
-function excerptOf(text: string): string {
+/** A short, publishable excerpt of untrusted text: whitespace collapsed, URLs and key-like tokens dropped. */
+export function excerptOf(text: string): string {
   const clean = text
     .slice(0, 4 * EXCERPT_LENGTH)
     .replace(/[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]*/gi, "…")
@@ -252,7 +253,7 @@ export async function getJson<T = unknown>(
     return t;
   };
 
-  const routes: Route[] = proxy ? ["WARP", "direct"] : ["direct"];
+  const routes = availableRoutes();
   for (const route of routes) {
     if ((await once(route)).rank === Rank.Final) return settle();
   }
@@ -293,7 +294,12 @@ function transientRetryRoute<T>(routes: Route[], tries: Try<T>[]): Route | undef
   );
 }
 
-function dispatcherOf(route: Route): Dispatcher | undefined {
+/** The routes a request can take, WARP first when it is configured. */
+export function availableRoutes(): Route[] {
+  return proxy ? ["WARP", "direct"] : ["direct"];
+}
+
+export function dispatcherOf(route: Route): Dispatcher | undefined {
   return route === "WARP" ? proxy : undefined;
 }
 
