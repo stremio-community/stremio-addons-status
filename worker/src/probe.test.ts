@@ -3,6 +3,7 @@ import type { Manifest } from "@stremio-addon/sdk";
 import type { NormalizedAddon } from "./types.js";
 import type { TestContent } from "./idsources.js";
 import type { Attempt, ParseError } from "./http.js";
+import type { NormResource } from "./manifest.js";
 
 // --- mocks -----------------------------------------------------------------
 
@@ -14,17 +15,17 @@ type RouteResult = {
   /** Replaces the single direct attempt the mock reports by default. */
   attempts?: Attempt[];
 };
-let router: (url: string) => RouteResult;
+let router: (url: string) => RouteResult | Promise<RouteResult>;
 
 const idsourcesMock = {
   hasSourceFor: (_prefixes: readonly string[]) => false,
-  resolveForPrefixes: async (_prefixes: readonly string[]): Promise<TestContent[]> => [],
+  candidatesFor: async (_res: NormResource): Promise<TestContent[]> => [],
 };
 
 vi.mock("./http.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./http.js")>()),
   getJson: async (url: string) => {
-    const { redirect, attempts, ...res } = router(url);
+    const { redirect, attempts, ...res } = await router(url);
     return {
       ...res,
       attempts: attempts ?? [
@@ -38,11 +39,11 @@ vi.mock("./http.js", async (importOriginal) => ({
 vi.mock("./idsources.js", () => ({
   resetCycle: () => {},
   hasSourceFor: (p: readonly string[]) => idsourcesMock.hasSourceFor(p),
-  resolveForPrefixes: (p: readonly string[]) => idsourcesMock.resolveForPrefixes(p),
+  candidatesFor: (res: NormResource) => idsourcesMock.candidatesFor(res),
 }));
 
 // Import after mocks are registered.
-const { probe } = await import("./probe.js");
+const { probe, forgetRememberedTargets } = await import("./probe.js");
 const { OVERRIDES } = await import("./overrides.js");
 const overrides = OVERRIDES as Record<string, import("./overrides.js").AddonOverride>;
 
@@ -107,7 +108,8 @@ const HTML_PAGE: RouteResult = {
 
 beforeEach(() => {
   idsourcesMock.hasSourceFor = () => false;
-  idsourcesMock.resolveForPrefixes = async () => [];
+  idsourcesMock.candidatesFor = async () => [];
+  forgetRememberedTargets();
 });
 
 // --- tests -----------------------------------------------------------------
@@ -119,7 +121,7 @@ describe("probe", () => {
       resources: [{ name: "stream", types: ["movie", "series"], idPrefixes: ["tt", "kitsu"] }],
     });
     idsourcesMock.hasSourceFor = () => true;
-    idsourcesMock.resolveForPrefixes = async () => [
+    idsourcesMock.candidatesFor = async () => [
       { type: "movie", id: "tt1" },
       { type: "series", id: "tt2", episodeId: "tt2:1:1" },
     ];
@@ -141,7 +143,7 @@ describe("probe", () => {
       resources: [{ name: "stream", types: ["movie", "series"], idPrefixes: ["tt"] }],
     });
     idsourcesMock.hasSourceFor = () => true;
-    idsourcesMock.resolveForPrefixes = async () => [
+    idsourcesMock.candidatesFor = async () => [
       { type: "movie", id: "tt1" },
       { type: "series", id: "tt2", episodeId: "tt2:1:1" },
     ];
@@ -162,7 +164,7 @@ describe("probe", () => {
       resources: [{ name: "stream", types: ["movie", "series"], idPrefixes: ["tt"] }],
     });
     idsourcesMock.hasSourceFor = () => true;
-    idsourcesMock.resolveForPrefixes = async () => [
+    idsourcesMock.candidatesFor = async () => [
       { type: "movie", id: "tt1" },
       { type: "series", id: "tt2", episodeId: "tt2:1:1" },
     ];
@@ -183,7 +185,7 @@ describe("probe", () => {
       resources: [{ name: "stream", types: ["movie", "series"], idPrefixes: ["tt"] }],
     });
     idsourcesMock.hasSourceFor = () => true;
-    idsourcesMock.resolveForPrefixes = async () => [
+    idsourcesMock.candidatesFor = async () => [
       { type: "movie", id: "tt1" },
       { type: "series", id: "tt2", episodeId: "tt2:1:1" },
     ];
@@ -204,7 +206,7 @@ describe("probe", () => {
       resources: [{ name: "stream", types: ["movie", "series"], idPrefixes: ["tt"] }],
     });
     idsourcesMock.hasSourceFor = () => true;
-    idsourcesMock.resolveForPrefixes = async () => [{ type: "movie", id: "tt1" }];
+    idsourcesMock.candidatesFor = async () => [{ type: "movie", id: "tt1" }];
     router = routes([
       ["/manifest.json", manifestOk(m.manifest)],
       ["/stream/movie/tt1.json", { status: 200, data: { streams: [PLAYABLE] } }],
@@ -222,7 +224,7 @@ describe("probe", () => {
       resources: [{ name: "stream", types: ["movie", "series"], idPrefixes: ["tt"] }],
     });
     idsourcesMock.hasSourceFor = () => true;
-    idsourcesMock.resolveForPrefixes = async () => [
+    idsourcesMock.candidatesFor = async () => [
       { type: "movie", id: "tt1" },
       { type: "series", id: "tt2" },
     ];
@@ -247,7 +249,7 @@ describe("probe", () => {
       resources: [{ name: "stream", types: ["movie", "series"], idPrefixes: ["custom"] }],
     });
     idsourcesMock.hasSourceFor = () => true;
-    idsourcesMock.resolveForPrefixes = async () => [
+    idsourcesMock.candidatesFor = async () => [
       { type: "movie", id: "custom-movie" },
       { type: "series", id: "custom-series" },
     ];
@@ -265,30 +267,35 @@ describe("probe", () => {
     expect(r.message).toContain("series no episode ID");
   });
 
-  it("looks up a stream target's episode ID only once when meta has no videos", async () => {
+  it("streams a series whose meta has no videos under its own ID, fetching that meta once (DEL KDRAMA)", async () => {
     const m = addon({
       types: ["series"],
       resources: [
-        { name: "stream", types: ["series"], idPrefixes: ["custom"] },
-        { name: "meta", types: ["series"], idPrefixes: ["custom"] },
+        { name: "stream", types: ["series"], idPrefixes: ["tmdb:"] },
+        { name: "meta", types: ["series"], idPrefixes: ["tmdb:"] },
       ],
     });
-    idsourcesMock.hasSourceFor = () => true;
-    idsourcesMock.resolveForPrefixes = async () => [{ type: "series", id: "custom-series" }];
+    idsourcesMock.candidatesFor = async () => [{ type: "series", id: "tmdb:307478" }];
     let metaCalls = 0;
-    const metaNoVideos = { status: 200, data: { meta: { id: "custom-series", type: "series" } } };
+    const metaNoVideos = {
+      status: 200,
+      data: { meta: { id: "tmdb:307478", type: "series", name: "Pro Bono" } },
+    };
     router = routes([
       ["/manifest.json", manifestOk(m.manifest)],
       [
-        "/meta/series/custom-series.json",
+        "/meta/series/tmdb:307478.json",
         () => {
           metaCalls++;
           return metaNoVideos as never;
         },
       ],
+      ["/stream/series/tmdb:307478.json", { status: 200, data: { streams: [EPISODE] } }],
     ]);
     const r = await probe(m);
-    expect(r.detail.mode).toBe("liveness-only");
+    expect(r.success).toBe(true);
+    expect(r.message).toContain("stream: series 1 playable of 1");
+    expect(r.message).toContain("meta: valid");
     expect(metaCalls).toBe(1);
   });
 
@@ -298,7 +305,7 @@ describe("probe", () => {
       resources: [{ name: "stream", types: ["anime"], idPrefixes: ["kitsu"] }],
     });
     idsourcesMock.hasSourceFor = () => true;
-    idsourcesMock.resolveForPrefixes = async () => [
+    idsourcesMock.candidatesFor = async () => [
       { type: "anime", id: "kitsu:1", episodeId: "kitsu:1:1:1" },
     ];
     router = routes([
@@ -318,7 +325,7 @@ describe("probe", () => {
       resources: [{ name: "stream", types: ["movie", "series", "anime"], idPrefixes: ["kitsu"] }],
     });
     idsourcesMock.hasSourceFor = () => true;
-    idsourcesMock.resolveForPrefixes = async () => [
+    idsourcesMock.candidatesFor = async () => [
       { type: "anime", id: "kitsu:1", episodeId: "kitsu:1:1:1" },
     ];
     router = routes([
@@ -383,34 +390,42 @@ describe("probe", () => {
     expect(r.message).toContain("catalog: 1 metas");
   });
 
-  it("mixed-type stream addon deep-checks its own non-movie catalog instead of borrowing", async () => {
+  it("borrows for advertised movie and series even when its own catalog only covers another type (StreamViX)", async () => {
     const m = addon({
-      types: ["movie", "series", "anime"],
+      types: ["movie", "series", "tv"],
       resources: [
         "catalog",
-        { name: "stream", types: ["movie", "series", "anime"], idPrefixes: ["tt", "kitsu"] },
+        { name: "stream", types: ["movie", "series", "tv"], idPrefixes: ["tt", "tv:"] },
       ],
-      catalogs: [{ type: "anime", id: "top", name: "Top" }],
-    });
-    const resolve = vi.fn(async (): Promise<TestContent[]> => {
-      throw new Error("unexpected external ID lookup");
+      catalogs: [{ type: "tv", id: "streamvix_tv", name: "TV" }],
     });
     idsourcesMock.hasSourceFor = () => true;
-    idsourcesMock.resolveForPrefixes = resolve;
+    idsourcesMock.candidatesFor = async () => [
+      { type: "movie", id: "tt1", source: "cinemeta" },
+      { type: "series", id: "tt2", episodeId: "tt2:1:1", source: "cinemeta" },
+    ];
+    const trailer = {
+      name: "StreamViX",
+      title: "Trailer",
+      ytId: "a1",
+      behaviorHints: { bingeGroup: "trailer" },
+    };
     router = routes([
       ["/manifest.json", manifestOk(m.manifest)],
       [
-        "/catalog/anime/top.json",
-        { status: 200, data: { metas: [{ id: "kitsu:1", type: "anime", name: "A" }] } },
+        "/catalog/tv/streamvix_tv.json",
+        { status: 200, data: { metas: [{ id: "tv:rai1", type: "tv", name: "Rai 1" }] } },
       ],
-      ["/stream/anime/kitsu:1.json", { status: 500, data: { streams: [] } }],
+      ["/stream/tv/tv:rai1.json", { status: 200, data: { streams: [PLAYABLE] } }],
+      ["/stream/movie/tt1.json", { status: 200, data: { streams: [trailer] } }],
+      ["/stream/series/tt2:1:1.json", { status: 200, data: { streams: [] } }],
     ]);
     const r = await probe(m);
-    expect(r.success).toBe(false);
-    expect(r.detail.mode).toBe("content");
-    expect(r.error).toBe("stream");
-    expect(r.message).toContain("anime HTTP 500");
-    expect(resolve).not.toHaveBeenCalled();
+    expect(r.success).toBe(true);
+    const stream = r.detail.perResource.find((p) => p.resource === "stream");
+    expect(stream?.summary).toBe(
+      "movie 0 playable, 1 link of 1 · series no streams · tv 1 playable of 1",
+    );
   });
 
   it("does not borrow IDs when own catalogs already cover movie and series stream targets", async () => {
@@ -426,18 +441,18 @@ describe("probe", () => {
       throw new Error("unexpected external ID lookup");
     });
     idsourcesMock.hasSourceFor = () => true;
-    idsourcesMock.resolveForPrefixes = resolve;
+    idsourcesMock.candidatesFor = resolve;
     router = routes([
       ["/manifest.json", manifestOk(m.manifest)],
       [
         "/catalog/movie/top-movie.json",
-        { status: 200, data: { metas: [{ id: "movie1", type: "movie", name: "M" }] } },
+        { status: 200, data: { metas: [{ id: "tt1", type: "movie", name: "M" }] } },
       ],
       [
         "/catalog/series/top-series.json",
         { status: 200, data: { metas: [{ id: "tt2", type: "series", name: "S" }] } },
       ],
-      ["/stream/movie/movie1.json", { status: 200, data: { streams: [PLAYABLE, MORE] } }],
+      ["/stream/movie/tt1.json", { status: 200, data: { streams: [PLAYABLE, MORE] } }],
       ["/stream/series/tt2:1:1.json", { status: 200, data: { streams: [EPISODE] } }],
     ]);
     const r = await probe(m);
@@ -445,30 +460,35 @@ describe("probe", () => {
     expect(resolve).not.toHaveBeenCalled();
   });
 
-  it("borrows only the stream target type its own catalogs don't cover", async () => {
+  it("doesn't borrow a type its own catalogs show it doesn't carry (CineTorrent)", async () => {
     const m = addon({
       types: ["movie", "series"],
-      resources: ["catalog", { name: "stream", types: ["movie", "series"], idPrefixes: ["tt"] }],
-      catalogs: [{ type: "movie", id: "top-movie", name: "Top Movies" }],
+      resources: [{ name: "stream", types: ["movie", "series"], idPrefixes: ["tt"] }],
+      catalogs: [{ type: "movie", id: "top_movies", name: "Top Movies" }],
     });
-    idsourcesMock.hasSourceFor = () => true;
-    idsourcesMock.resolveForPrefixes = async () => [
+    const candidates = vi.fn(async (): Promise<TestContent[]> => [
       { type: "movie", id: "tt-borrowed" },
       { type: "series", id: "tt2", episodeId: "tt2:1:1" },
-    ];
+    ]);
+    idsourcesMock.hasSourceFor = () => true;
+    idsourcesMock.candidatesFor = candidates;
     router = routes([
       ["/manifest.json", manifestOk(m.manifest)],
       [
-        "/catalog/movie/top-movie.json",
-        { status: 200, data: { metas: [{ id: "movie1", type: "movie", name: "M" }] } },
+        "/catalog/movie/top_movies.json",
+        { status: 200, data: { metas: [{ id: "tt1", type: "movie", name: "M" }] } },
       ],
-      ["/stream/movie/movie1.json", { status: 200, data: { streams: [PLAYABLE] } }],
-      ["/stream/series/tt2:1:1.json", { status: 200, data: { streams: [EPISODE, MORE] } }],
+      ["/stream/movie/tt1.json", { status: 200, data: { streams: [PLAYABLE] } }],
     ]);
     const r = await probe(m);
     expect(r.success).toBe(true);
-    expect(r.message).toContain("movie 1 playable of 1");
-    expect(r.message).toContain("series 2 playable of 2");
+    const stream = r.detail.perResource.find((p) => p.resource === "stream");
+    expect(stream?.summary).toBe("movie 1 playable of 1 · series not in own catalogs");
+    expect(stream?.details).toContainEqual({
+      label: "Skipped",
+      value: "series: the addon's own catalogs list other types only",
+    });
+    expect(candidates).not.toHaveBeenCalled();
   });
 
   it("dual-target stream fetch that throws counts as that target failing, not the addon", async () => {
@@ -477,7 +497,7 @@ describe("probe", () => {
       resources: [{ name: "stream", types: ["movie", "series"], idPrefixes: ["tt"] }],
     });
     idsourcesMock.hasSourceFor = () => true;
-    idsourcesMock.resolveForPrefixes = async () => [
+    idsourcesMock.candidatesFor = async () => [
       { type: "movie", id: "tt1" },
       { type: "series", id: "tt2", episodeId: "tt2:1:1" },
     ];
@@ -533,7 +553,7 @@ describe("probe", () => {
       resources: [{ name: "stream", types: ["movie"], idPrefixes: ["tt"] }],
     });
     idsourcesMock.hasSourceFor = () => true;
-    idsourcesMock.resolveForPrefixes = async () => [{ type: "movie", id: "tt1" }];
+    idsourcesMock.candidatesFor = async () => [{ type: "movie", id: "tt1" }];
     router = routes([
       ["/manifest.json", manifestOk(m.manifest)],
       ["/stream/movie/tt1.json", { status: 200, data: { streams: [PLAYABLE] } }],
@@ -573,7 +593,7 @@ describe("probe", () => {
       resources: [{ name: "stream", types: ["movie"], idPrefixes: ["tt"] }],
     });
     idsourcesMock.hasSourceFor = () => true;
-    idsourcesMock.resolveForPrefixes = async () => [{ type: "movie", id: "tt1" }];
+    idsourcesMock.candidatesFor = async () => [{ type: "movie", id: "tt1" }];
     router = routes([
       ["/manifest.json", manifestOk(m.manifest)],
       ["/stream/movie/tt1.json", { status: 200, data: { streams: [{ name: "junk" }, {}] } }],
@@ -770,7 +790,7 @@ describe("probe unparsable bodies", () => {
       resources: [{ name: "stream", types: ["movie"], idPrefixes: ["tt"] }],
     });
     idsourcesMock.hasSourceFor = () => true;
-    idsourcesMock.resolveForPrefixes = async () => [{ type: "movie", id: "tt1" }];
+    idsourcesMock.candidatesFor = async () => [{ type: "movie", id: "tt1" }];
     router = routes([
       ["/manifest.json", manifestOk(m.manifest)],
       ["/stream/movie/tt1.json", HTML_PAGE],
@@ -849,7 +869,7 @@ describe("probe detail rows", () => {
       resources: [{ name: "stream", types: ["movie", "series"], idPrefixes: ["tt"] }],
     });
     idsourcesMock.hasSourceFor = () => true;
-    idsourcesMock.resolveForPrefixes = async () => [
+    idsourcesMock.candidatesFor = async () => [
       { type: "movie", id: "tt1", source: "cinemeta" },
       { type: "series", id: "tt2", episodeId: "tt2:1:1", source: "cinemeta" },
     ];
@@ -936,7 +956,7 @@ describe("probe stream content", () => {
       ...manifest,
     });
     idsourcesMock.hasSourceFor = () => true;
-    idsourcesMock.resolveForPrefixes = async () => [
+    idsourcesMock.candidatesFor = async () => [
       { type: "movie", id: "tt0111161" },
       { type: "series", id: "tt0903747", episodeId: "tt0903747:1:1" },
     ];
@@ -1307,7 +1327,7 @@ describe("probe catalog notices", () => {
       ],
     });
     idsourcesMock.hasSourceFor = () => true;
-    idsourcesMock.resolveForPrefixes = async () => [
+    idsourcesMock.candidatesFor = async () => [
       { type: "movie", id: "tt1" },
       { type: "series", id: "tt2", episodeId: "tt2:1:1" },
     ];
@@ -1346,7 +1366,7 @@ describe("probe catalog notices", () => {
       behaviorHints: { configurable: true },
     });
     idsourcesMock.hasSourceFor = () => true;
-    idsourcesMock.resolveForPrefixes = async () => [{ type: "movie", id: "tt1" }];
+    idsourcesMock.candidatesFor = async () => [{ type: "movie", id: "tt1" }];
     router = routes([
       ["/manifest.json", manifestOk(m.manifest)],
       [
@@ -1455,7 +1475,7 @@ describe("probe needs-configuration", () => {
 
   const scraper = (manifest: Partial<Manifest> = {}) => {
     idsourcesMock.hasSourceFor = () => true;
-    idsourcesMock.resolveForPrefixes = async () => [
+    idsourcesMock.candidatesFor = async () => [
       { type: "movie", id: "tt0111161" },
       { type: "series", id: "tt0903747", episodeId: "tt0903747:1:1" },
     ];
@@ -1664,6 +1684,889 @@ describe("probe needs-configuration", () => {
       [`${BASE}/eng/stream/series/`, { status: 200, data: { streams: [EPISODE] } }],
     ]);
     const r = await probe(m);
+    expect(r.detail.mode).toBe("content");
+  });
+});
+
+describe("probe test-ID scope", () => {
+  it("skips the meta check when no title is in the meta resource's scope (Halloween After Dark)", async () => {
+    const m = addon({
+      types: ["movie", "series", "other"],
+      resources: [
+        { name: "catalog", types: ["movie", "series", "other"] },
+        { name: "meta", types: ["series"], idPrefixes: ["had:episode:"] },
+      ],
+      catalogs: [{ type: "other", id: "recent-horror", name: "Recent" }],
+    });
+    const requested: string[] = [];
+    const route = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/catalog/other/recent-horror.json",
+        { status: 200, data: { metas: [{ id: "tt34890576", type: "movie", name: "Obsession" }] } },
+      ],
+    ]);
+    router = (url) => {
+      requested.push(url);
+      return route(url);
+    };
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(requested.some((u) => u.includes("/meta/"))).toBe(false);
+    const meta = r.detail.perResource.find((p) => p.resource === "meta");
+    expect(meta).toEqual({
+      resource: "meta",
+      ok: true,
+      summary: "no test ID in scope",
+      details: [
+        {
+          label: "Skipped",
+          value: "no test ID in the meta resource's scope (series · had:episode:)",
+        },
+      ],
+    });
+  });
+
+  it("checks meta with the first catalog title in its scope (French Stream)", async () => {
+    const m = addon({
+      types: ["movie"],
+      resources: ["catalog", { name: "meta", types: ["movie"], idPrefixes: ["fs:"] }],
+      catalogs: [{ type: "movie", id: "fs-derniers-films", name: "Films" }],
+    });
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/catalog/movie/fs-derniers-films.json",
+        {
+          status: 200,
+          data: {
+            metas: [
+              { id: "tt35856037", type: "movie", name: "A" },
+              { id: "fs:123", type: "movie", name: "B" },
+            ],
+          },
+        },
+      ],
+      [
+        "/meta/movie/fs:123.json",
+        { status: 200, data: { meta: { id: "fs:123", type: "movie", name: "B" } } },
+      ],
+    ]);
+    const r = await probe(m);
+    expect(r.message).toContain("meta: valid");
+  });
+
+  it("drops an episode its meta hands to other addons' IDs, leaving no test ID rather than a failure (Sitcom Surprise)", async () => {
+    const m = addon({
+      types: ["series"],
+      resources: [
+        "catalog",
+        { name: "meta", types: ["series"], idPrefixes: ["shuffle:"] },
+        { name: "stream", types: ["series"], idPrefixes: ["shuffle:"] },
+      ],
+      catalogs: [{ type: "series", id: "shuffle", name: "Shuffle" }],
+    });
+    const requested: string[] = [];
+    const route = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/catalog/series/shuffle.json",
+        {
+          status: 200,
+          data: { metas: [{ id: "shuffle:office", type: "series", name: "The Office" }] },
+        },
+      ],
+      [
+        "/meta/series/shuffle:office.json",
+        {
+          status: 200,
+          data: {
+            meta: {
+              id: "shuffle:office",
+              type: "series",
+              name: "The Office",
+              behaviorHints: { defaultVideoId: "tt0386676:2:7" },
+            },
+          },
+        },
+      ],
+    ]);
+    router = (url) => {
+      requested.push(url);
+      return route(url);
+    };
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(r.detail.mode).toBe("liveness-only");
+    expect(r.detail.skipReason).toBe("no test ID in the stream resource's scope");
+    expect(requested.some((u) => u.includes("/stream/"))).toBe(false);
+  });
+
+  it("tests a navigation addon with a borrowed movie when its own episodes are outside its stream scope (Watch Order)", async () => {
+    const m = addon({
+      types: ["movie", "series"],
+      resources: [
+        "catalog",
+        { name: "stream", types: ["movie", "series"], idPrefixes: ["tt"] },
+        { name: "meta", types: ["series"], idPrefixes: ["wo:"] },
+      ],
+      catalogs: [
+        {
+          type: "series",
+          id: "wo.universes",
+          name: "Universes",
+          extra: [{ name: "genre", isRequired: true, options: ["Marvel"] }],
+        },
+      ],
+    });
+    idsourcesMock.hasSourceFor = () => true;
+    idsourcesMock.candidatesFor = async () => [
+      { type: "movie", id: "tt13968252", source: "cinemeta" },
+    ];
+    const link = {
+      name: "Watch Order",
+      title: "Next: Thor",
+      externalUrl: "stremio:///detail/movie/tt0800369",
+    };
+    const requested: string[] = [];
+    const route = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/catalog/series/wo.universes/genre=Marvel.json",
+        { status: 200, data: { metas: [{ id: "wo:mcu", type: "series", name: "MCU" }] } },
+      ],
+      [
+        "/meta/series/wo:mcu.json",
+        {
+          status: 200,
+          data: {
+            meta: {
+              id: "wo:mcu",
+              type: "series",
+              name: "MCU",
+              videos: [{ id: "wo:mcu:ep:tt13968252", season: 1, episode: 1 }],
+            },
+          },
+        },
+      ],
+      ["/stream/movie/tt13968252.json", { status: 200, data: { streams: [link] } }],
+    ]);
+    router = (url) => {
+      requested.push(url);
+      return route(url);
+    };
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(requested.some((u) => u.includes("/stream/series/"))).toBe(false);
+    const stream = r.detail.perResource.find((p) => p.resource === "stream");
+    expect(stream?.details).toContainEqual({
+      label: "Skipped",
+      value: "wo:mcu:ep:tt13968252: outside the stream resource's scope",
+    });
+  });
+
+  it("asks Cinemeta, not its own meta, for an IMDb series its meta resource doesn't claim", async () => {
+    const m = addon({
+      types: ["series"],
+      resources: [
+        "catalog",
+        { name: "meta", types: ["series"], idPrefixes: ["had:episode:"] },
+        { name: "stream", types: ["series"], idPrefixes: ["tt"] },
+      ],
+      catalogs: [{ type: "series", id: "spooky-tv", name: "Spooky TV" }],
+    });
+    const requested: string[] = [];
+    const route = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/catalog/series/spooky-tv.json",
+        {
+          status: 200,
+          data: { metas: [{ id: "tt0103352", type: "series", name: "Are You Afraid" }] },
+        },
+      ],
+      [
+        "v3-cinemeta.strem.io/meta/series/tt0103352.json",
+        {
+          status: 200,
+          data: {
+            meta: {
+              id: "tt0103352",
+              videos: [
+                { id: "tt0103352:0:1", season: 0, episode: 1 },
+                { id: "tt0103352:1:2", season: 1, episode: 2 },
+              ],
+            },
+          },
+        },
+      ],
+      ["/stream/series/tt0103352:1:2.json", { status: 200, data: { streams: [EPISODE] } }],
+    ]);
+    router = (url) => {
+      requested.push(url);
+      return route(url);
+    };
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(requested.some((u) => u.startsWith(`${BASE}/meta/`))).toBe(false);
+  });
+});
+
+describe("probe episode IDs", () => {
+  it("streams a custom-type title with the episode its meta lists (Heroes)", async () => {
+    const m = addon({
+      types: ["Heroes"],
+      resources: [
+        "catalog",
+        { name: "meta", types: ["Heroes"], idPrefixes: ["tt", "hub:"] },
+        { name: "stream", types: ["Heroes"], idPrefixes: ["tt", "hub:"] },
+      ],
+      catalogs: [{ type: "Heroes", id: "99575:kamen-rider", name: "Kamen Rider" }],
+    });
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/catalog/Heroes/99575:kamen-rider.json",
+        { status: 200, data: { metas: [{ id: "tt41416782", type: "Heroes", name: "Zeztz" }] } },
+      ],
+      [
+        "/meta/Heroes/tt41416782.json",
+        {
+          status: 200,
+          data: {
+            meta: {
+              id: "tt41416782",
+              type: "Heroes",
+              name: "Zeztz",
+              videos: [{ id: "tt41416782:1:1", season: 1, episode: 1 }],
+            },
+          },
+        },
+      ],
+      ["/stream/Heroes/tt41416782:1:1.json", { status: 200, data: { streams: [EPISODE] } }],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(r.message).toContain("stream: Heroes 1 playable of 1");
+  });
+
+  it("prefers a regular episode over a season-0 special (One Pace)", async () => {
+    const m = addon({
+      types: ["anime"],
+      resources: ["catalog", "meta", "stream"],
+      catalogs: [{ type: "anime", id: "seriesCatalog", name: "One Pace" }],
+    });
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/catalog/anime/seriesCatalog.json",
+        { status: 200, data: { metas: [{ id: "pp_onepace", type: "anime", name: "One Pace" }] } },
+      ],
+      [
+        "/meta/anime/pp_onepace.json",
+        {
+          status: 200,
+          data: {
+            meta: {
+              id: "pp_onepace",
+              type: "anime",
+              name: "One Pace",
+              videos: [
+                { id: "SP_1", season: 0, episode: 1 },
+                { id: "RO_1", season: 1, episode: 1 },
+              ],
+            },
+          },
+        },
+      ],
+      ["/stream/anime/RO_1.json", { status: 200, data: { streams: [EPISODE] } }],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+  });
+
+  it("moves on to the next title when one has no episode ID, noting it (KhmerDub)", async () => {
+    const m = addon({
+      types: ["series"],
+      resources: ["catalog", "meta", "stream"],
+      catalogs: [{ type: "series", id: "vip", name: "VIP" }],
+    });
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/catalog/series/vip.json",
+        {
+          status: 200,
+          data: {
+            metas: [
+              { id: "vip:1", type: "series", name: "A" },
+              { id: "vip:2", type: "series", name: "B" },
+            ],
+          },
+        },
+      ],
+      ["/meta/series/vip:1.json", { status: 200, data: { meta: null } }],
+      [
+        "/meta/series/vip:2.json",
+        {
+          status: 200,
+          data: { meta: { id: "vip:2", type: "series", name: "B", videos: [{ id: "vip:2:1" }] } },
+        },
+      ],
+      ["/stream/series/vip:2:1.json", { status: 200, data: { streams: [EPISODE] } }],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    const stream = r.detail.perResource.find((p) => p.resource === "stream");
+    expect(stream?.details).toContainEqual({ label: "Skipped", value: "vip:1: no episode ID" });
+  });
+});
+
+describe("probe own catalogs as the ID source", () => {
+  const ownCatalogAddon = (catalogs: Manifest["catalogs"], types = ["movie"]) =>
+    addon({
+      types,
+      idPrefixes: ["custom:"],
+      resources: ["catalog", "meta", "stream"],
+      catalogs,
+    });
+
+  it("is DOWN when the addon's own catalog, its only ID source, answers HTTP 500 (Crunch, AnimePahe)", async () => {
+    const m = ownCatalogAddon([{ type: "movie", id: "top", name: "Top" }]);
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      ["/catalog/movie/top.json", { status: 500, data: { error: "Unexpected token '<'" } }],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(false);
+    expect(r.detail.mode).toBe("content");
+    expect(r.detail.primary).toBe("catalog");
+    expect(r.error).toBe("catalog");
+    expect(r.message).toBe("manifest up · catalog: movie HTTP 500");
+    const catalog = r.detail.perResource.find((p) => p.resource === "catalog");
+    expect(catalog?.details).toContainEqual({
+      label: "Reason",
+      value: "addon responded with HTTP 500",
+    });
+  });
+
+  it("is DOWN only once every catalog it tries is empty (IndTorrents), and UP when a later one has titles (Motorsport Hub)", async () => {
+    const catalogs = ["a", "b", "c", "d"].map((id) => ({ type: "movie", id, name: id }));
+    const m = ownCatalogAddon(catalogs);
+    const empty = { status: 200, data: { metas: [] } };
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      ["/catalog/movie/", empty],
+    ]);
+    const down = await probe(m);
+    expect(down.success).toBe(false);
+    expect(down.message).toBe("manifest up · catalog: movie empty (3 tries)");
+
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      ["/catalog/movie/a.json", empty],
+      [
+        "/catalog/movie/b.json",
+        { status: 200, data: { metas: [{ id: "custom:1", type: "movie", name: "X" }] } },
+      ],
+      [
+        "/meta/movie/custom:1.json",
+        { status: 200, data: { meta: { id: "custom:1", type: "movie", name: "X" } } },
+      ],
+      ["/stream/movie/custom:1.json", { status: 200, data: { streams: [PLAYABLE] } }],
+    ]);
+    const up = await probe(m);
+    expect(up.success).toBe(true);
+    const catalog = up.detail.perResource.find((p) => p.resource === "catalog");
+    expect(catalog?.ok).toBe(true);
+    expect(catalog?.details).toContainEqual({
+      label: "Also tried",
+      value: "/catalog/movie/a.json · empty",
+    });
+  });
+
+  it("tries several search terms before calling a search-only catalog empty, and stops at an error (Iran Provider, Crunch)", async () => {
+    const m = ownCatalogAddon([
+      {
+        type: "movie",
+        id: "search",
+        name: "Search",
+        extra: [{ name: "search", isRequired: true }],
+      },
+    ]);
+    const requested: string[] = [];
+    let route = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      ["/catalog/movie/search/", { status: 200, data: { metas: [] } }],
+    ]);
+    router = (url) => {
+      requested.push(url);
+      return route(url);
+    };
+    const empty = await probe(m);
+    expect(empty.success).toBe(false);
+    expect(requested.filter((u) => u.includes("/catalog/"))).toEqual([
+      `${BASE}/catalog/movie/search/search=batman.json`,
+      `${BASE}/catalog/movie/search/search=naruto.json`,
+      `${BASE}/catalog/movie/search/search=love.json`,
+    ]);
+
+    requested.length = 0;
+    route = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      ["/catalog/movie/search/", { status: 500, data: {} }],
+    ]);
+    const failed = await probe(m);
+    expect(failed.message).toBe("manifest up · catalog: movie HTTP 500");
+    expect(requested.filter((u) => u.includes("/catalog/"))).toHaveLength(1);
+  });
+
+  it("stays liveness-only when its catalogs need input the worker can't give", async () => {
+    const m = ownCatalogAddon([
+      { type: "movie", id: "mine", name: "Mine", extra: [{ name: "user", isRequired: true }] },
+    ]);
+    router = routes([["/manifest.json", manifestOk(m.manifest)]]);
+    const r = await probe(m);
+    expect(r.detail.mode).toBe("liveness-only");
+  });
+
+  it("stays liveness-only when an external source covers its prefixes, so the catalog isn't its only ID source", async () => {
+    const m = addon({
+      types: ["movie"],
+      resources: ["catalog", { name: "stream", types: ["movie"], idPrefixes: ["tt"] }],
+      catalogs: [{ type: "movie", id: "top", name: "Top" }],
+    });
+    idsourcesMock.hasSourceFor = () => true;
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      ["/catalog/movie/top.json", { status: 500, data: {} }],
+    ]);
+    const r = await probe(m);
+    expect(r.detail.mode).toBe("liveness-only");
+  });
+
+  it("queries catalogs the manifest declares without a catalog resource (Napflix)", async () => {
+    const m = addon({
+      types: ["channel"],
+      resources: [
+        { name: "stream", types: ["channel"], idPrefixes: ["nf_id:"] },
+        { name: "meta", types: ["channel"], idPrefixes: ["nf_id:"] },
+      ],
+      catalogs: [{ type: "channel", id: "Napflix", name: "Napflix" }],
+    });
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/catalog/channel/Napflix.json",
+        { status: 200, data: { metas: [{ id: "nf_id:1", type: "channel", name: "Siesta" }] } },
+      ],
+      [
+        "/meta/channel/nf_id:1.json",
+        { status: 200, data: { meta: { id: "nf_id:1", type: "channel", name: "Siesta" } } },
+      ],
+      [
+        "/stream/channel/nf_id:1.json",
+        { status: 200, data: { streams: [{ ytId: "abc", title: "Siesta" }] } },
+      ],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(r.detail.mode).toBe("content");
+    expect(r.message).toContain("stream: channel 1 playable of 1");
+  });
+
+  it("looks in catalogs of any type for titles of a stream type when no catalog declares one (Adult Stremio Addon)", async () => {
+    const m = addon({
+      types: ["porn"],
+      resources: [
+        { name: "catalog", types: ["porn"] },
+        { name: "stream", types: ["movie"], idPrefixes: ["asa:scene:"] },
+      ],
+      catalogs: [{ type: "porn", id: "recent", name: "Recent" }],
+    });
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/catalog/porn/recent.json",
+        { status: 200, data: { metas: [{ id: "asa:scene:1", type: "movie", name: "Scene" }] } },
+      ],
+      ["/stream/movie/asa:scene:1.json", { status: 200, data: { streams: [PLAYABLE] } }],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(r.message).toContain("stream: movie 1 playable of 1");
+  });
+
+  it("labels a check by the title's own type, not its catalog's (Animee)", async () => {
+    const m = addon({
+      types: ["movie", "series"],
+      idPrefixes: ["oa"],
+      resources: ["catalog", "stream"],
+      catalogs: [{ type: "series", id: "sort_ForYou", name: "For You" }],
+    });
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/catalog/series/sort_ForYou.json",
+        { status: 200, data: { metas: [{ id: "oa1", type: "movie", name: "A" }] } },
+      ],
+      ["/stream/movie/oa1.json", { status: 200, data: { streams: [PLAYABLE] } }],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(r.detail.perResource.find((p) => p.resource === "stream")?.summary).toBe(
+      "movie 1 playable of 1",
+    );
+  });
+
+  it("passes a catalog addon whose first catalog is empty when a later one has titles (Bharat Binge)", async () => {
+    const m = addon({
+      types: ["movie", "series"],
+      resources: ["catalog", "meta"],
+      catalogs: [
+        { type: "movie", id: "flixpatrol-netflix-movies", name: "Netflix" },
+        { type: "series", id: "provider-sonyliv-series", name: "SonyLIV" },
+      ],
+    });
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      ["/catalog/movie/flixpatrol-netflix-movies.json", { status: 200, data: { metas: [] } }],
+      [
+        "/catalog/series/provider-sonyliv-series.json",
+        { status: 200, data: { metas: [{ id: "tt1", type: "series", name: "S" }] } },
+      ],
+      [
+        "/meta/series/tt1.json",
+        { status: 200, data: { meta: { id: "tt1", type: "series", name: "S" } } },
+      ],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(r.message).toContain("catalog: 1 metas");
+  });
+
+  it("retries an empty catalog once with an optional extra's first option, encoding extra names and types (ArabCinemeta)", async () => {
+    const m = addon({
+      types: ["DC Universe"],
+      resources: ["catalog"],
+      catalogs: [
+        {
+          type: "DC Universe",
+          id: "elcinema-now",
+          name: "Now",
+          extra: [{ name: "skip" }, { name: "Saga Name", options: ["Egypt & Co", "Lebanon"] }],
+        },
+      ],
+    });
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/catalog/DC%20Universe/elcinema-now/Saga%20Name=Egypt%20%26%20Co.json",
+        { status: 200, data: { metas: [{ id: "x1", type: "movie", name: "X" }] } },
+      ],
+      ["/catalog/DC%20Universe/elcinema-now.json", { status: 200, data: { metas: [] } }],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(r.detail.perResource.find((p) => p.resource === "catalog")?.details).toContainEqual({
+      label: "Also tried",
+      value: "/catalog/DC%20Universe/elcinema-now.json · empty",
+    });
+  });
+});
+
+describe("probe several titles per type", () => {
+  it("tries the next catalog titles until one has streams, showing every ID tried (Tubi Movies)", async () => {
+    const m = addon({
+      types: ["movie"],
+      resources: ["catalog", "stream"],
+      idPrefixes: ["tubi:"],
+      catalogs: [{ type: "movie", id: "tubi-movies", name: "Tubi" }],
+    });
+    const ids = ["tubi:515934", "tubi:605225", "tubi:100065772", "tubi:401469"];
+    let streamRequests = 0;
+    const route = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/catalog/movie/tubi-movies.json",
+        { status: 200, data: { metas: ids.map((id) => ({ id, type: "movie", name: id })) } },
+      ],
+      ["/stream/movie/tubi:100065772.json", { status: 200, data: { streams: [PLAYABLE] } }],
+      ["/stream/movie/", { status: 200, data: { streams: [] } }],
+    ]);
+    router = (url) => {
+      if (url.includes("/stream/")) streamRequests++;
+      return route(url);
+    };
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(streamRequests).toBe(3);
+    const stream = r.detail.perResource.find((p) => p.resource === "stream");
+    expect(stream?.summary).toBe("movie 1 playable of 1");
+    expect(stream?.details).toEqual(
+      expect.arrayContaining([
+        { label: "Test ID", value: "tubi:100065772 (own catalog)" },
+        { label: "Also tried", value: "/stream/movie/tubi:515934.json (own catalog) · no streams" },
+        { label: "Also tried", value: "/stream/movie/tubi:605225.json (own catalog) · no streams" },
+      ]),
+    );
+  });
+
+  it("stops at three stream requests per type and says how many IDs it tried", async () => {
+    const m = addon({
+      types: ["movie"],
+      resources: [{ name: "stream", types: ["movie"], idPrefixes: ["tt"] }],
+    });
+    idsourcesMock.hasSourceFor = () => true;
+    idsourcesMock.candidatesFor = async () =>
+      ["tt1", "tt2", "tt3", "tt4"].map((id) => ({ type: "movie", id, source: "cinemeta" }));
+    let streamRequests = 0;
+    router = (url) => {
+      if (url.includes("/stream/")) streamRequests++;
+      return routes([
+        ["/manifest.json", manifestOk(m.manifest)],
+        ["/stream/movie/", { status: 200, data: { streams: [] } }],
+      ])(url);
+    };
+    const r = await probe(m);
+    expect(r.success).toBe(false);
+    expect(streamRequests).toBe(3);
+    expect(r.message).toBe("manifest up · stream: movie no streams (3 IDs)");
+  });
+
+  it("tries curated IDs, then its own titles, then borrowed ones", async () => {
+    const m = addon({
+      types: ["movie"],
+      resources: ["catalog", { name: "stream", types: ["movie"], idPrefixes: ["tt"] }],
+      catalogs: [{ type: "movie", id: "top", name: "Top" }],
+    });
+    overrides[m.uuid] = { name: "Test", testIds: [{ type: "movie", id: "tt-curated" }] };
+    idsourcesMock.hasSourceFor = () => true;
+    idsourcesMock.candidatesFor = async () => [{ type: "movie", id: "tt-borrowed" }];
+    const streams: string[] = [];
+    const route = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/catalog/movie/top.json",
+        { status: 200, data: { metas: [{ id: "tt-own", type: "movie", name: "Own" }] } },
+      ],
+      ["/stream/movie/tt-borrowed.json", { status: 200, data: { streams: [PLAYABLE] } }],
+      ["/stream/movie/", { status: 200, data: { streams: [] } }],
+    ]);
+    router = (url) => {
+      if (url.includes("/stream/")) streams.push(url.slice(url.lastIndexOf("/") + 1));
+      return route(url);
+    };
+    try {
+      const r = await probe(m);
+      expect(r.success).toBe(true);
+      expect(streams).toEqual(["tt-curated.json", "tt-own.json", "tt-borrowed.json"]);
+    } finally {
+      delete overrides[m.uuid];
+    }
+  });
+
+  it("keeps at most two types' requests in flight", async () => {
+    const m = addon({
+      types: ["movie", "series", "anime"],
+      resources: [
+        { name: "stream", types: ["movie", "series", "anime"], idPrefixes: ["tt", "kitsu"] },
+      ],
+    });
+    idsourcesMock.hasSourceFor = () => true;
+    idsourcesMock.candidatesFor = async () => [
+      { type: "movie", id: "tt1" },
+      { type: "movie", id: "tt3" },
+      { type: "series", id: "tt2", episodeId: "tt2:1:1" },
+      { type: "anime", id: "kitsu:1", episodeId: "kitsu:1:1" },
+    ];
+    let inFlight = 0;
+    let most = 0;
+    router = async (url) => {
+      if (url.endsWith("/manifest.json")) return manifestOk(m.manifest);
+      inFlight++;
+      most = Math.max(most, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      inFlight--;
+      return { status: 200, data: { streams: [] } };
+    };
+    const r = await probe(m);
+    expect(r.detail.perResource.find((p) => p.resource === "stream")?.summary).toBe(
+      "movie no streams (2 IDs) · series no streams · anime no streams",
+    );
+    expect(most).toBe(2);
+  });
+
+  it("stops trying further IDs once two stream requests got no answer", async () => {
+    const m = addon({
+      types: ["movie"],
+      resources: [{ name: "stream", types: ["movie"], idPrefixes: ["tt"] }],
+    });
+    idsourcesMock.hasSourceFor = () => true;
+    idsourcesMock.candidatesFor = async () =>
+      ["tt1", "tt2", "tt3"].map((id) => ({ type: "movie", id }));
+    let streamRequests = 0;
+    router = (url) => {
+      if (url.endsWith("/manifest.json")) return manifestOk(m.manifest);
+      streamRequests++;
+      throw new Error("timeout");
+    };
+    const r = await probe(m);
+    expect(r.success).toBe(false);
+    expect(streamRequests).toBe(2);
+  });
+
+  it("falls back to the last own title that worked when its catalog fails, before borrowing (Anixio)", async () => {
+    const m = addon({
+      types: ["series"],
+      resources: [
+        "catalog",
+        { name: "meta", types: ["series"], idPrefixes: ["anixart"] },
+        { name: "stream", types: ["series"], idPrefixes: ["anixart", "tt"] },
+      ],
+      catalogs: [{ type: "series", id: "anixart_popular", name: "Popular" }],
+    });
+    idsourcesMock.hasSourceFor = () => true;
+    idsourcesMock.candidatesFor = async () => [
+      { type: "series", id: "tt2", episodeId: "tt2:1:1", source: "cinemeta" },
+    ];
+    const stream = { status: 200, data: { streams: [EPISODE] } };
+    const meta: [string, RouteResult] = [
+      "/meta/series/anixart:1.json",
+      {
+        status: 200,
+        data: {
+          meta: { id: "anixart:1", type: "series", name: "A", videos: [{ id: "anixart:1:1:1" }] },
+        },
+      },
+    ];
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/catalog/series/anixart_popular.json",
+        { status: 200, data: { metas: [{ id: "anixart:1", type: "series", name: "A" }] } },
+      ],
+      meta,
+      ["/stream/series/anixart:1:1:1.json", stream],
+    ]);
+    expect((await probe(m)).success).toBe(true);
+
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      ["/catalog/series/anixart_popular.json", { status: 504, data: {} }],
+      meta,
+      ["/stream/series/anixart:1:1:1.json", stream],
+      ["/stream/series/tt2:1:1.json", { status: 200, data: { streams: [] } }],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(r.detail.perResource.find((p) => p.resource === "stream")?.details).toContainEqual({
+      label: "Test ID",
+      value: "anixart:1:1:1 (own catalog, earlier cycle)",
+    });
+  });
+
+  it("still sees a stream repeated across titles it tried for one type as a placeholder", async () => {
+    const m = addon({
+      types: ["movie", "series"],
+      resources: [{ name: "stream", types: ["movie", "series"], idPrefixes: ["tt"] }],
+    });
+    idsourcesMock.hasSourceFor = () => true;
+    idsourcesMock.candidatesFor = async () => [
+      { type: "movie", id: "tt1" },
+      { type: "series", id: "tt2", episodeId: "tt2:1:1" },
+    ];
+    const card = { name: "Info", title: "Visit our site", url: "https://addon.test/info.mp4" };
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      ["/stream/", { status: 200, data: { streams: [card] } }],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(false);
+  });
+});
+
+describe("probe catalog order and notices per title", () => {
+  it("alternates catalog sources, so one failing backend doesn't use up every try (Latanime)", async () => {
+    const m = addon({
+      types: ["series"],
+      idPrefixes: ["latanime:", "av1:"],
+      resources: ["catalog", "meta", "stream"],
+      catalogs: [
+        "latanime-latest",
+        "latanime-airing",
+        "latanime-directory",
+        "animeav1-directory",
+      ].map((id) => ({ type: "series", id, name: id })),
+    });
+    const catalogRequests: string[] = [];
+    const route = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      ["/catalog/series/latanime-", { status: 502, data: undefined }],
+      [
+        "/catalog/series/animeav1-directory.json",
+        { status: 200, data: { metas: [{ id: "av1:1", type: "series", name: "A" }] } },
+      ],
+      [
+        "/meta/series/av1:1.json",
+        {
+          status: 200,
+          data: { meta: { id: "av1:1", type: "series", name: "A", videos: [{ id: "av1:1:1" }] } },
+        },
+      ],
+      ["/stream/series/av1:1:1.json", { status: 200, data: { streams: [EPISODE] } }],
+    ]);
+    router = (url) => {
+      if (url.includes("/catalog/")) catalogRequests.push(url.slice(BASE.length));
+      return route(url);
+    };
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(catalogRequests).toEqual([
+      "/catalog/series/latanime-latest.json",
+      "/catalog/series/animeav1-directory.json",
+    ]);
+  });
+
+  it("tries the next title when one of its own answers a per-title paywall notice (StremVerse)", async () => {
+    const m = addon({
+      types: ["tv"],
+      resources: ["catalog", "stream"],
+      catalogs: [{ type: "tv", id: "stremverse_live_events", name: "Live" }],
+    });
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/catalog/tv/stremverse_live_events.json",
+        {
+          status: 200,
+          data: {
+            metas: [
+              { id: "ev:1", type: "tv", name: "Chapecoense vs Mirassol" },
+              { id: "ev:2", type: "tv", name: "Atlético Madrid vs Bayern" },
+            ],
+          },
+        },
+      ],
+      [
+        "/stream/tv/ev:1.json",
+        {
+          status: 200,
+          data: {
+            streams: [
+              {
+                name: "That's it?",
+                title: "Use Mediaflow proxy or Xtra subscription.",
+                externalUrl: "https://stremverse.test/xtra",
+              },
+            ],
+          },
+        },
+      ],
+      ["/stream/tv/ev:2.json", { status: 200, data: { streams: [PLAYABLE] } }],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(true);
     expect(r.detail.mode).toBe("content");
   });
 });
