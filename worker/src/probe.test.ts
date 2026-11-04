@@ -755,6 +755,25 @@ describe("probe unparsable bodies", () => {
     expect(meta?.details).toContainEqual({ label: "Reason", value: "HTML page instead of JSON" });
   });
 
+  it("reports an HTML stream answer as an HTML page, not as no streams", async () => {
+    const m = addon({
+      types: ["movie"],
+      resources: [{ name: "stream", types: ["movie"], idPrefixes: ["tt"] }],
+    });
+    idsourcesMock.hasSourceFor = () => true;
+    idsourcesMock.resolveForPrefixes = async () => [{ type: "movie", id: "tt1" }];
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      ["/stream/movie/tt1.json", HTML_PAGE],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(false);
+    const stream = r.detail.perResource.find((p) => p.resource === "stream");
+    expect(stream?.summary).toBe("movie HTML page");
+    expect(stream?.details).toContainEqual({ label: "Reason", value: "HTML page instead of JSON" });
+    expect(stream?.details).toContainEqual({ label: "Page title", value: "Not found" });
+  });
+
   it("annotates an HTML subtitles answer as an HTML page", async () => {
     const m = addon({
       types: ["movie"],

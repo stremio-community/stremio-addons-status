@@ -227,6 +227,7 @@ interface StreamFetch {
   status?: number;
   streams: StreamClass[];
   error?: string;
+  parseError?: ParseError;
 }
 
 type Placeholder = Extract<StreamClass, { kind: "placeholder" }> & { repeated?: boolean };
@@ -278,7 +279,8 @@ function judgeStreamFetch(
   repeated: Set<string>,
   configurable: boolean,
 ): StreamCheckResult {
-  const rows = (reason?: string) => requestRows(f.path, f.attempts, { testId: f.testId, reason });
+  const rows = (reason?: string) =>
+    requestRows(f.path, f.attempts, { testId: f.testId, reason, parseError: f.parseError });
   const failed = { target: f.target, outcome: "failed" as const, total: 0, playable: 0, links: 0 };
   if (f.status === undefined) {
     return { ...failed, summary: "unreachable", details: rows(f.error) };
@@ -289,6 +291,9 @@ function judgeStreamFetch(
       summary: `HTTP ${f.status}`,
       details: rows(`addon responded with HTTP ${f.status}`),
     };
+  }
+  if (f.parseError) {
+    return { ...failed, summary: describeParseError(f.parseError).summary, details: rows() };
   }
   const streams = f.streams.map((c) => judgedStream(c, repeated, configurable));
   const total = streams.length;
@@ -346,7 +351,7 @@ function noticeReason(notice: Placeholder): string {
 function judgeStreamFetches(fetches: StreamFetch[], configurable: boolean): StreamCheckResult[] {
   const byTestId = new Map<string, StreamClass[]>();
   for (const f of fetches) {
-    if (f.status !== undefined && isOkStatus(f.status) && !byTestId.has(f.id)) {
+    if (f.status !== undefined && isOkStatus(f.status) && !f.parseError && !byTestId.has(f.id)) {
       byTestId.set(f.id, f.streams);
     }
   }
@@ -757,13 +762,14 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
         const path = `/stream/${type}/${encodeId(id)}.json`;
         const base = { target, id, path, testId: describeTestId(id, target.source) };
         try {
-          const { status, data, attempts } = await getJson<StreamResponse>(
+          const { status, data, parseError, attempts } = await getJson<StreamResponse>(
             addon.baseUrl + path,
             config.timeouts.stream,
           );
           const raw = Array.isArray(data?.streams) ? data!.streams! : [];
           const streams = raw.map((st) => classifyStream(st, { baseUrl: addon.baseUrl }));
-          return { ...base, status, attempts, streams };
+          const unparsed = isOkStatus(status) ? parseError : undefined;
+          return { ...base, status, attempts, streams, parseError: unparsed };
         } catch (e) {
           return { ...base, attempts: attemptsOf(e), streams: [], error: errMsg(e) };
         }
@@ -946,9 +952,7 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
   // Manifest up but primary content failed.
   // The log message carries the full per-resource breakdown, not just the primary, so a DOWN is explainable from the logs alone.
   const breakdown = perResource.map((r) => `${r.resource}: ${r.summary}`).join(" · ");
-  const downMsg = breakdown
-    ? `manifest up · ${breakdown}`
-    : `manifest up · ${primary} check failed`;
+  const downMsg = `manifest up · ${breakdown}`;
   log.debug(
     { step: "verdict", mode: "content", primary, streamCounts },
     `content DOWN: primary resource ${primary} failed`,
