@@ -603,6 +603,8 @@ function judgeStreamFetch(
     summary = checked.summary;
     playable = 0;
     notice = undefined;
+  } else if (playable > 0 && v?.urls?.length && v.urls.every((u) => u.verdict === "unverifiable")) {
+    summary = `${plural(playable, "stream")}, URLs unverifiable`;
   }
   const reason = checked
     ? checked.reason

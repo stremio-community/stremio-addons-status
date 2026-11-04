@@ -3740,10 +3740,33 @@ describe("probe stream URL checks", () => {
       { title: "5Gold", url: "https://cloudfront.test/live/playlist.m3u8" },
     ]);
     expect(r.success).toBe(true);
+    expect(streamOf(r)?.summary).toBe("tv 1 stream, URLs unverifiable");
     expect(streamOf(r)?.details).toContainEqual({
       label: "URL check",
       value: "1 unverifiable of 1 · cloudfront.test: HTTP 403 text/html, blocked",
     });
+  });
+
+  it("says when the deciding target's checked URLs are all unverifiable, keeping it UP (Tvvio)", async () => {
+    urlcheckMock.checkUrl = verdictOf({ "d1.cdn10embed.test": GEO, "d2.cdn10embed.test": GEO });
+    const r = await probeTv(["ec:aee"], () => [
+      { name: "A&E (direto)", url: "https://d1.cdn10embed.test/aee/index.m3u8" },
+      { name: "A&E (direto)", url: "https://d2.cdn10embed.test/aee/index.m3u8" },
+      { name: "A&E (relay)", url: "https://relay.test/aee/index.m3u8" },
+    ]);
+    expect(r.success).toBe(true);
+    expect(r.detail.mode).toBe("content");
+    expect(streamOf(r)?.summary).toBe("tv 3 streams, URLs unverifiable");
+    expect(r.detail.streamCounts).toEqual({ total: 3, playable: 3, links: 0 });
+  });
+
+  it("keeps the playable count when one checked URL plays beside an unverifiable one", async () => {
+    urlcheckMock.checkUrl = verdictOf({ "cdn.test": GEO });
+    const r = await probeTv(["a"], () => [
+      { name: "A", url: "https://cdn.test/a.m3u8" },
+      { name: "B", url: "https://plays.test/b.m3u8" },
+    ]);
+    expect(streamOf(r)?.summary).toBe("tv 2 playable of 2");
   });
 
   it("passes an informational addon whose stream URLs all open web pages as a link addon (Stremio Stinger)", async () => {
