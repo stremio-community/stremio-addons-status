@@ -28,8 +28,8 @@ const MARKER = new RegExp(
 /** Release groups lead a release name in brackets: `[SubsPlease] …`. */
 const LEADING_GROUPS = /^\s*(?:[[【][^\]】]*[\]】]\s*)+/u;
 
-/** Alternative titles sit in brackets or after a slash or bar. */
-const ALTERNATIVES = /[()[\]{}]|\s[/|]\s/u;
+/** Alternative titles sit in brackets, after a bar, or after a slash between spaces (AC/DC is one title). */
+const ALTERNATIVES = /[()[\]{}|]|\s\/+\s/u;
 
 /** Words that don't tell titles apart: articles, prepositions and particles in the languages release names use, and release tags left before the first marker. */
 const IGNORED = new Set([

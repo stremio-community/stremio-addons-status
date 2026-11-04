@@ -92,6 +92,11 @@ describe("otherTitle", () => {
     expect(otherTitle(streams, ["The Shawshank Redemption"])).toBeUndefined();
   });
 
+  it("matches an alternative title after a double bar (YouTube Recaps)", () => {
+    const streams = [{ title: "قصة سلسلة ذا ماتريكس كاملة || The Matrix 2024" }];
+    expect(otherTitle(streams, ["The Matrix"])).toBeUndefined();
+  });
+
   it("matches a localized title that keeps the original beside a subtitle", () => {
     const streams = [{ title: "Breaking Bad - Reazioni collaterali S01E01 1080p" }];
     expect(otherTitle(streams, ["Breaking Bad"])).toBeUndefined();

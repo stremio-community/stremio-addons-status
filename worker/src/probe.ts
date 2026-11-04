@@ -485,10 +485,14 @@ interface Verification {
   linkPage?: LinkPage;
 }
 
-/** `linkPage`: read from the page a templated link opens rather than from the stream itself. */
+/**
+ * `linkPage`: read from the page a templated link opens rather than from the stream itself.
+ * `otherTitle`: a stream naming another title than the one asked for, labelled with that title.
+ */
 type Placeholder = Extract<StreamClass, { kind: "placeholder" }> & {
   repeated?: boolean;
   linkPage?: boolean;
+  otherTitle?: boolean;
 };
 
 /**
@@ -550,6 +554,21 @@ function upsellsAsNoise(streams: StreamClass[]): StreamClass[] {
   );
 }
 
+function forOtherTitle(streams: StreamClass[], other: OtherTitle | undefined): StreamClass[] {
+  if (!other) return streams;
+  return streams.map((c, i) => {
+    if ((c.kind !== "playable" && c.kind !== "link") || !other.streams[i]) return c;
+    const placeholder: Placeholder = {
+      kind: "placeholder",
+      placeholder: "no-content",
+      fingerprint: c.fingerprint,
+      label: other.title,
+      otherTitle: true,
+    };
+    return placeholder;
+  });
+}
+
 function judgeStreamFetch(
   f: StreamFetch,
   repeated: Set<string>,
@@ -579,7 +598,12 @@ function judgeStreamFetch(
   if (f.parseError) {
     return { ...failed, summary: describeParseError(f.parseError).summary, details: rows() };
   }
-  const streams = upsellsAsNoise(f.streams.map((c) => judgedStream(c, repeated, configurable)));
+  const streams = upsellsAsNoise(
+    forOtherTitle(
+      f.streams.map((c) => judgedStream(c, repeated, configurable)),
+      f.otherTitle,
+    ),
+  );
   const total = streams.length;
   let playable = streams.filter((c) => c.kind === "playable").length;
   const links = streams.filter((c) => c.kind === "link").length;
@@ -611,6 +635,8 @@ function judgeStreamFetch(
     notice = undefined;
   } else if (playable > 0 && v?.urls?.length && v.urls.every((u) => u.verdict === "unverifiable")) {
     summary = `${plural(playable, "stream")}, URLs unverifiable`;
+  } else if (outcome === "placeholder" && notice?.otherTitle) {
+    summary = `${plural(total, "stream")}, wrong title`;
   }
   const reason = checked
     ? checked.reason
@@ -632,21 +658,25 @@ function judgeStreamFetch(
     links,
     notice,
     summary,
-    details: [...rows(reason), ...verificationRows(v), ...otherTitleRows(f, streams)],
+    details: [
+      ...rows(reason),
+      ...verificationRows(v),
+      ...(outcome === "placeholder" && notice?.otherTitle ? [] : otherTitleRows(streams)),
+    ],
     answeredInMs,
   };
 }
 
-function otherTitleRows(f: StreamFetch, streams: StreamClass[]): DetailRow[] {
-  if (!f.otherTitle) return [];
+/** Streams for another title beside ones that still count, so they don't explain the outcome. */
+function otherTitleRows(streams: StreamClass[]): DetailRow[] {
   const named = streams.filter(
-    (c, i) => (c.kind === "playable" || c.kind === "link") && f.otherTitle!.streams[i],
-  ).length;
-  if (named === 0) return [];
+    (c): c is Placeholder => c.kind === "placeholder" && "otherTitle" in c,
+  );
+  if (named.length === 0) return [];
   return [
     {
       label: "Note",
-      value: `wrong title: ${named} of ${plural(streams.length, "stream")} name ${f.otherTitle.title}`,
+      value: `wrong title: ${named.length} of ${plural(streams.length, "stream")} name ${named[0].label}`,
     },
   ];
 }
@@ -729,6 +759,7 @@ function verificationRows(v: Verification | undefined): DetailRow[] {
 }
 
 function noticeReason(notice: Placeholder): string {
+  if (notice.otherTitle) return `streams for another title: ${notice.label}`;
   if (notice.repeated) {
     return notice.label
       ? `same stream for unrelated titles: ${notice.label}`
