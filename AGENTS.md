@@ -51,7 +51,8 @@ The point of the worker is to avoid false DOWNs. Preserve these when editing `pr
 - Flux owns the worker's tag line in `deploy/kustomization.yaml` (the `$imagepolicy` marker): it commits each new image's tag to `main`. Never write `[skip ci]` in a commit message of your own.
 - The cluster's ConfigMap is generated from `gatus/config.d/00-base.yaml`, outside `deploy/`. Render with `kubectl kustomize --load-restrictor LoadRestrictionsNone deploy`, which matches Flux.
 - Secrets live only in `deploy/secret.sops.yaml`, encrypted to the cluster key per `.sops.yaml`; never commit a plaintext secret or a real Discord webhook.
-- Containers run as UID 1000 with a read-only root filesystem: anything that writes files needs a volume, like the shared `/config` emptyDir.
+- Containers run as UID 1000 with a read-only root filesystem: anything that writes files needs a volume, like the shared `/config` PVC.
+- `/config` must persist across restarts: Gatus deletes the history of every endpoint missing from the configuration it starts with, so an empty `/config` at startup wipes every addon's history.
 
 ## Conventions
 

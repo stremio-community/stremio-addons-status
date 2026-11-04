@@ -22,6 +22,8 @@ spec:
         runAsUser: 1000
         runAsGroup: 1000
         runAsNonRoot: true
+        # Makes the config volume writable by the worker.
+        fsGroup: 1000
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -114,9 +116,10 @@ spec:
             limits:
               memory: 512Mi
       volumes:
-        # Rebuilt on every start: the worker writes its endpoints here, and Gatus reads them with the base configuration.
+        # The worker writes its endpoints here, and Gatus reads them with the base configuration.
         - name: config
-          emptyDir: {}
+          persistentVolumeClaim:
+            claimName: stremio-addons-status-config
         - name: base-config
           configMap:
             name: gatus-config
