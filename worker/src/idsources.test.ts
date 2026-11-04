@@ -249,7 +249,9 @@ describe("candidatesFor", () => {
   it("borrows IMDb and Kitsu IDs for a resource without prefixes, which accepts every ID", async () => {
     const cs = await candidatesFor(res(["movie", "series"], []));
     expect(cs.some((c) => c.type === "movie" && c.id.startsWith("tt"))).toBe(true);
-    expect(cs.some((c) => c.type === "series" && (c.episodeId ?? c.id).startsWith("tt"))).toBe(true);
+    expect(cs.some((c) => c.type === "series" && (c.episodeId ?? c.id).startsWith("tt"))).toBe(
+      true,
+    );
     expect((await candidatesFor(res(["movie"], [""]))).length).toBeGreaterThan(0);
     expect(hasSourceFor([])).toBe(true);
     expect(hasSourceFor([""])).toBe(true);
