@@ -25,8 +25,21 @@ const idsourcesMock = {
   candidatesFor: async (_res: NormResource): Promise<TestContent[]> => [],
 };
 
+/** Subtitle files by URL; any other file is unreachable. */
+const subtitleFiles = new Map<string, string>();
+
 vi.mock("./http.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./http.js")>()),
+  getSample: async (url: string) => {
+    const { RequestFailedError } = await importOriginal<typeof import("./http.js")>();
+    const body = subtitleFiles.get(url);
+    if (body === undefined) throw new RequestFailedError("fetch failed", []);
+    return {
+      status: 200,
+      bytes: new TextEncoder().encode(body),
+      attempts: [{ route: "direct", status: 200, durationMs: 1 }],
+    };
+  },
   getJson: async (url: string, _timeout: number, options: GetJsonOptions<unknown> = {}) => {
     requestOptions.set(url, options);
     const { redirect, attempts, ...res } = await router(url, options);
@@ -111,6 +124,7 @@ const HTML_PAGE: RouteResult = {
 };
 
 beforeEach(() => {
+  subtitleFiles.clear();
   idsourcesMock.hasSourceFor = () => false;
   idsourcesMock.candidatesFor = async () => [];
   forgetRememberedTargets();
@@ -820,12 +834,12 @@ describe("probe unparsable bodies", () => {
         "/catalog/movie/top.json",
         { status: 200, data: { metas: [{ id: "x1", type: "movie", name: "X" }] } },
       ],
-      ["/subtitles/movie/x1.json", HTML_PAGE],
+      ["/subtitles/movie/x1", HTML_PAGE],
     ]);
     const r = await probe(m);
     expect(r.success).toBe(true);
     const subs = r.detail.perResource.find((p) => p.resource === "subtitles");
-    expect(subs?.summary).toBe("HTML page");
+    expect(subs?.summary).toBe("movie HTML page");
     expect(subs?.details).toContainEqual({ label: "Page title", value: "Not found" });
   });
 });
@@ -2898,9 +2912,10 @@ describe("probe transport", () => {
     expect(r.success).toBe(true);
     expect(requestOptions.get(STREAM_URL)?.retry).toBe(true);
     for (const [url, options] of requestOptions) {
-      if (url.includes("/catalog/") || url.includes("/meta/") || url.includes("/subtitles/")) {
+      if (url.includes("/catalog/") || url.includes("/meta/")) {
         expect(options, url).toEqual({});
       }
+      if (url.includes("/subtitles/")) expect(options.retry, url).toBe(false);
     }
   });
 
@@ -3087,5 +3102,152 @@ describe("probe transport", () => {
     expect(r.detail.perResource.find((p) => p.resource === "catalog")?.summary).toBe(
       "1 metas · slow (17 s)",
     );
+  });
+});
+
+describe("probe subtitles-only addons", () => {
+  afterEach(() => {
+    for (const uuid of Object.keys(overrides)) delete overrides[uuid];
+  });
+
+  const subtitlesAddon = (manifest: Partial<Manifest> = {}) =>
+    addon({
+      types: ["movie", "series"],
+      resources: [{ name: "subtitles", types: ["movie", "series"], idPrefixes: ["tt"] }],
+      ...manifest,
+    });
+  const SRT = [
+    "1\n00:00:01,000 --> 00:00:02,000\nWe need to go deeper.\n",
+    "2\n00:00:03,000 --> 00:00:04,000\nAn idea is like a virus.\n",
+  ].join("\n");
+
+  it("content-checks a subtitles-only addon with borrowed titles and a file name (Napisy24)", async () => {
+    const m = subtitlesAddon({
+      resources: [{ name: "subtitles", types: ["movie", "series"] }],
+    } as Partial<Manifest>);
+    idsourcesMock.candidatesFor = async () => [
+      { type: "movie", id: "tt1375666", source: "well-known" },
+    ];
+    subtitleFiles.set("https://subs.test/1.srt", SRT);
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/meta/movie/tt1375666.json",
+        { status: 200, data: { meta: { name: "Inception", year: "2010" } } },
+      ],
+      [
+        "/subtitles/movie/tt1375666/filename=Inception.2010.1080p.WEB-DL.mkv.json",
+        {
+          status: 200,
+          data: { subtitles: [{ id: "1", lang: "pol", url: "https://subs.test/1.srt" }] },
+        },
+      ],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(r.detail.mode).toBe("content");
+    expect(r.detail.primary).toBe("subtitles");
+    expect(r.message).toBe("subtitles: movie 1 found");
+  });
+
+  it("goes DOWN when every answer is a notice (Demo Titlovi.com)", async () => {
+    const m = subtitlesAddon();
+    idsourcesMock.candidatesFor = async () => [{ type: "movie", id: "tt1375666" }];
+    const url = "https://stremio.titlovi.com/files/api-disabled.vtt";
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/subtitles/movie/tt1375666",
+        {
+          status: 200,
+          data: { subtitles: ["bos", "srp", "eng"].map((lang) => ({ id: "0", lang, url })) },
+        },
+      ],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(false);
+    expect(r.error).toBe("subtitles");
+    expect(r.message).toBe("manifest up · subtitles: movie notices only");
+  });
+
+  it("reports a plea to configure as needs-config (SubMaker)", async () => {
+    const m = subtitlesAddon();
+    idsourcesMock.candidatesFor = async () => [{ type: "movie", id: "tt1375666" }];
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/subtitles/movie/tt1375666",
+        {
+          status: 200,
+          data: {
+            subtitles: [
+              {
+                id: "config_error_session_token",
+                lang: "!SubMaker Error",
+                url: "https://submaker.test/error/session-token-not-found.srt",
+              },
+            ],
+          },
+        },
+      ],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(r.detail.mode).toBe("needs-config");
+    expect(r.detail.configReason).toBe("!SubMaker Error");
+  });
+
+  it("goes DOWN when nothing comes back for the titles its override names (TR Altyazı)", async () => {
+    const m = subtitlesAddon();
+    overrides[m.uuid] = { name: "TR Altyazı", testIds: [{ type: "movie", id: "tt0468569" }] };
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      ["/subtitles/", { status: 200, data: { subtitles: [] } }],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(false);
+    expect(r.detail.primary).toBe("subtitles");
+  });
+
+  it("stays UP, annotated, when nothing comes back for borrowed titles, configurable or not (DualSubs)", async () => {
+    const m = subtitlesAddon({ behaviorHints: { configurable: true } });
+    idsourcesMock.candidatesFor = async () => [{ type: "movie", id: "tt1375666" }];
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      ["/subtitles/", { status: 200, data: { subtitles: [] } }],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(r.detail.mode).toBe("content");
+    expect(r.message).toBe("subtitles: movie 0 found");
+  });
+
+  it("judges nothing for every title under a public test config as a verdict, not a missing config (yifysubtitles)", async () => {
+    const m = subtitlesAddon({
+      behaviorHints: { configurable: true, configurationRequired: true },
+    });
+    overrides[m.uuid] = {
+      name: "yifysubtitles",
+      testConfig: "english",
+      testIds: [{ type: "movie", id: "tt1375666" }],
+    };
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      ["/subtitles/", { status: 200, data: { subtitles: [] } }],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(false);
+    expect(r.detail.primary).toBe("subtitles");
+  });
+
+  it("is liveness-only without a title in the resource's scope", async () => {
+    const m = subtitlesAddon({
+      resources: [{ name: "subtitles", types: ["series"], idPrefixes: ["RO_"] }],
+    });
+    router = routes([["/manifest.json", manifestOk(m.manifest)]]);
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(r.detail.mode).toBe("liveness-only");
+    expect(r.detail.skipReason).toBe("no test ID for subtitles");
   });
 });

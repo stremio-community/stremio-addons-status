@@ -15,6 +15,7 @@ import {
   type JsonResult,
   type ParseError,
 } from "./http.js";
+import { alsoTriedRow, answerTime, describeTestId, requestRows } from "./rows.js";
 import { encodeId, errMsg } from "./utils.js";
 import { candidatesFor, hasSourceFor, type TestContent } from "./idsources.js";
 import { logger, type Logger } from "./logger.js";
@@ -35,6 +36,7 @@ import {
   type MetaNotice,
   type StreamClass,
 } from "./streams.js";
+import { checkSubtitles, subtitleTargets } from "./subtitles.js";
 import { unconfiguredReason, type ContentAnswer } from "./unconfigured.js";
 import type { DetailRow, NormalizedAddon, PerResourceResult, ProbeResult } from "./types.js";
 
@@ -53,6 +55,8 @@ const SEARCH_TERMS = ["batman", "naruto", "love"];
 const CINEMETA = "https://v3-cinemeta.strem.io";
 /** A deciding request slower than this still works, but keeps a user waiting long enough to say so. */
 const SLOW_MS = 10_000;
+/** Titles a subtitles-only addon is asked for: a movie and a series where it advertises both, and one more. */
+const MAX_SUBTITLE_TITLES = 3;
 const IMDB_ID = /^tt\d+$/;
 
 interface CatalogResponse {
@@ -74,52 +78,6 @@ function missingMetaFields(m: unknown): string[] {
 
 function isOkStatus(status: number): boolean {
   return status >= 200 && status < 300;
-}
-
-function describeTestId(id: string, source: string | undefined): string {
-  return source ? `${id} (${source})` : id;
-}
-
-function attemptRows(a: Attempt): DetailRow[] {
-  const outcome = a.status !== undefined ? `HTTP ${a.status}` : (a.error ?? "failed");
-  return [
-    { label: "Attempt", value: `${a.route} · ${outcome} · ${a.durationMs}ms` },
-    ...(a.redirect ? [{ label: "Redirect", value: a.redirect }] : []),
-  ];
-}
-
-/**
- * Rows describing one request: what was asked for, over which routes, and why it failed (only when it did).
- * A `parseError` supplies the reason unless one is given, and adds what the body looked like.
- */
-function requestRows(
-  path: string,
-  attempts: Attempt[],
-  {
-    testId,
-    reason,
-    parseError,
-    note,
-  }: { testId?: string; reason?: string; parseError?: ParseError; note?: string } = {},
-): DetailRow[] {
-  const parsed = parseError ? describeParseError(parseError) : undefined;
-  const why = reason ?? parsed?.reason;
-  return [
-    { label: "Request", value: path },
-    ...(testId ? [{ label: "Test ID", value: testId }] : []),
-    ...attempts.flatMap(attemptRows),
-    ...(why ? [{ label: "Reason", value: why }] : []),
-    ...(note ? [{ label: "Note", value: note }] : []),
-    ...(parsed?.details ?? []),
-  ];
-}
-
-/** How long the route whose answer the request kept took to give it, leaving out the tries it replaced. */
-function answerTime({
-  status,
-  attempts,
-}: Pick<JsonResult<unknown>, "status" | "attempts">): number {
-  return attempts.findLast((a) => a.status === status)?.durationMs ?? 0;
 }
 
 /** A request that decided the verdict, and how long its answer took. */
@@ -165,11 +123,6 @@ function hasRealMeta(data: CatalogResponse | undefined): boolean {
 
 function hasValidMeta(data: MetaResponse | undefined): boolean {
   return missingMetaFields(data?.meta).length === 0;
-}
-
-/** A request summarized in one row, for the requests a check made besides the one its full rows describe. */
-function alsoTriedRow(request: string, summary: string): DetailRow {
-  return { label: "Also tried", value: `${request} · ${summary}` };
 }
 
 /** A test ID and where it came from, before the ID its stream request asks for is known. */
@@ -1087,14 +1040,16 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
   // Stremio reads catalogs from `manifest.catalogs` alone, whether or not `resources` lists `catalog`.
   const plans = catalogPlans(catalogs);
 
-  // Primary content resource: stream > catalog > meta.
-  let primary: "stream" | "catalog" | "meta" | null = streamRes
+  // Primary content resource: stream > catalog > meta > subtitles.
+  let primary: "stream" | "catalog" | "meta" | "subtitles" | null = streamRes
     ? "stream"
     : catalogs.length > 0
       ? "catalog"
       : metaRes
         ? "meta"
-        : null;
+        : subtitlesRes
+          ? "subtitles"
+          : null;
 
   if (!primary) return livenessOnly("no testable resource");
   log.debug({ step: "discovery", primary, catalogs: plans.length }, `primary resource: ${primary}`);
@@ -1128,6 +1083,8 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
   let metaAnswer: ContentAnswer | undefined;
   let streamDeciding: Timing[] = [];
   let metaDeciding: Timing[] = [];
+  let subtitleAnswers: Array<ContentAnswer | undefined> = [];
+  let subtitleDeciding: Timing[] = [];
 
   if (streamRes) {
     const advertised = advertisedStreamProbeTypes(streamRes.types);
@@ -1382,6 +1339,23 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
         );
       }
     }
+  } else if (primary === "subtitles") {
+    const check = await checkSubtitles(
+      base,
+      subtitleTargets(subtitlesRes!, override?.testIds ?? [], log),
+      {
+        maxTitles: MAX_SUBTITLE_TITLES,
+        sniff: true,
+        retry: true,
+        log,
+      },
+    );
+    if (check) {
+      perResource.push(check.result);
+      subtitleAnswers = check.answers;
+      subtitleDeciding = check.deciding ? [check.deciding] : [];
+      if (check.verdict.kind === "needs-config") return needsConfiguration(check.verdict.reason);
+    }
   }
 
   const ownItems = attempts.flatMap((a) => a.items);
@@ -1466,7 +1440,7 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
   }
 
   // Secondary resources: shape-only, annotate, never flip DOWN.
-  if (subtitlesRes) {
+  if (subtitlesRes && primary !== "subtitles") {
     const pool = [
       ...tried.map((t) => ({ type: t.type, id: t.streamId, source: t.source })),
       ...ownItems,
@@ -1474,32 +1448,12 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
     ];
     const test = pool.find((c) => resourceAccepts(subtitlesRes, c.type, c.id));
     if (test) {
-      const path = `/subtitles/${encodeId(test.type)}/${encodeId(test.id)}.json`;
-      try {
-        const {
-          data,
-          parseError,
-          attempts: routes,
-        } = await getJson<{ subtitles?: unknown[] }>(base + path, config.timeouts.meta);
-        const ok = Array.isArray(data?.subtitles);
-        perResource.push({
-          resource: "subtitles",
-          ok,
-          summary: ok
-            ? `${data!.subtitles!.length} found`
-            : parseError
-              ? describeParseError(parseError).summary
-              : "invalid",
-          details: requestRows(path, routes, {
-            testId: describeTestId(test.id, test.source),
-            reason: ok || parseError ? undefined : "response has no subtitles array",
-            parseError,
-          }),
-        });
-        log.debug({ step: "subtitles", ok }, "subtitles check (annotation only)");
-      } catch {
-        /* secondary: ignore */
-      }
+      const check = await checkSubtitles(
+        base,
+        [{ type: test.type, id: test.id, source: test.source }],
+        { maxTitles: 1, sniff: false, retry: false, log },
+      );
+      if (check) perResource.push(check.result);
     }
   }
 
@@ -1514,7 +1468,9 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
         ? streamDeciding
         : primary === "catalog"
           ? walks.flatMap((w) => w.deciding ?? [])
-          : metaDeciding,
+          : primary === "subtitles"
+            ? subtitleDeciding
+            : metaDeciding,
     );
   }
   const okResources = perResource.filter((r) => r.ok);
@@ -1550,7 +1506,9 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
       ? streamAnswers
       : primary === "catalog"
         ? attempts.map((a) => a.answer)
-        : [metaAnswer];
+        : primary === "subtitles"
+          ? subtitleAnswers
+          : [metaAnswer];
   const unconfigured = await unconfiguredReason(live, primaryAnswers, manifestAttempts, base);
   if (unconfigured) return needsConfiguration(unconfigured);
 
