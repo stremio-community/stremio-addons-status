@@ -29,6 +29,7 @@ The point of the worker is to avoid false DOWNs. Preserve these when editing `pr
 - Only the primary resource (`stream` > `catalog` > `meta`) decides UP/DOWN; secondary resources only annotate.
 - An addon is unreachable only when both the WARP proxy and the direct route fail.
 - A missing test ID (e.g. an external ID-source outage) degrades to liveness-only or an annotation, never to DOWN.
+- A placeholder (a configure plea, a notice, a stream identical for unrelated titles) never counts as content; an addon answering only pleas to configure is needs-config, not DOWN.
 
 ## Production
 

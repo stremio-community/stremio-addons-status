@@ -46,6 +46,34 @@ describe("buildConditions", () => {
     ]);
   });
 
+  it("reports a needs-configuration verdict as passing, with the addon's notice as the reason", () => {
+    expect(
+      buildConditions(
+        verdict({
+          live: true,
+          mode: "needs-config",
+          configReason: "Jackettio · ℹ Kindly configure this addon",
+          perResource: [
+            { resource: "stream", ok: false, summary: "movie 0 playable of 1", details: [] },
+          ],
+        }),
+        BASE,
+      ),
+    ).toEqual([
+      { condition: "manifest: reachable", success: true },
+      {
+        condition: "stream: movie 0 playable of 1 (informational)",
+        success: false,
+        details: [{ label: "Role", value: "informational" }],
+      },
+      {
+        condition: "content: needs configuration",
+        success: true,
+        details: [{ label: "Reason", value: "Jackettio · ℹ Kindly configure this addon" }],
+      },
+    ]);
+  });
+
   it("marks every resource other than the primary as informational, in its text and its role", () => {
     const conditions = buildConditions(
       verdict({
