@@ -14,7 +14,7 @@ describe("buildConditions", () => {
       buildConditions(
         verdict({
           live: false,
-          livenessError: "HTTP 502",
+          livenessError: "unreachable (HTTP 502)",
           mode: "content",
           perResource: [],
         }),
@@ -27,6 +27,25 @@ describe("buildConditions", () => {
     expect(
       buildConditions(verdict({ live: false, mode: "content", perResource: [] }), BASE),
     ).toEqual([{ condition: "manifest: unreachable", success: false }]);
+  });
+
+  it("names a manifest that isn't a Stremio manifest as such", () => {
+    expect(
+      buildConditions(
+        verdict({
+          live: false,
+          livenessError: "not a Stremio manifest (missing id, version, name, resources, types)",
+          mode: "content",
+          perResource: [],
+        }),
+        BASE,
+      ),
+    ).toEqual([
+      {
+        condition: "manifest: not a Stremio manifest (missing id, version, name, resources, types)",
+        success: false,
+      },
+    ]);
   });
 
   it("explains why the content tier was skipped in liveness-only mode", () => {
@@ -108,7 +127,7 @@ describe("buildConditions", () => {
     const [manifest] = buildConditions(
       verdict({
         live: false,
-        livenessError: `Failed to parse URL from ${BASE}/manifest.json`,
+        livenessError: `unreachable (Failed to parse URL from ${BASE}/manifest.json)`,
         manifestDetails: [
           { label: "Reason", value: `Failed to parse URL from ${BASE}/manifest.json` },
         ],

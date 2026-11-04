@@ -7,6 +7,26 @@ export interface NormResource {
   idPrefixes: string[];
 }
 
+/**
+ * The fields stremio-core needs to deserialize a manifest at all, so a body lacking any of them isn't an addon Stremio could install.
+ * `description` and `catalogs` are required by the SDK docs but not by Stremio, so requiring them would turn working addons DOWN.
+ */
+const REQUIRED_MANIFEST_FIELDS = [
+  ["id", "string"],
+  ["version", "string"],
+  ["name", "string"],
+  ["resources", "array"],
+  ["types", "array"],
+] as const;
+
+/** The required manifest fields the object lacks or holds with the wrong type, in manifest order. */
+export function missingManifestFields(m: object): string[] {
+  const o = m as Record<string, unknown>;
+  return REQUIRED_MANIFEST_FIELDS.filter(([field, kind]) =>
+    kind === "array" ? !Array.isArray(o[field]) : typeof o[field] !== kind,
+  ).map(([field]) => field);
+}
+
 export function normalizeResources(m: Manifest): NormResource[] {
   return (m.resources ?? []).map((r) => {
     if (typeof r === "string") {

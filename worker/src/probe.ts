@@ -6,11 +6,11 @@ import type {
   Stream,
 } from "@stremio-addon/sdk";
 import { config } from "./config.js";
-import { attemptsOf, getJson, type Attempt } from "./http.js";
+import { attemptsOf, describeParseError, getJson, type Attempt, type ParseError } from "./http.js";
 import { encodeId, errMsg } from "./utils.js";
 import { hasSourceFor, resolveForPrefixes, type TestContent } from "./idsources.js";
 import { logger } from "./logger.js";
-import { normalizeResources } from "./manifest.js";
+import { missingManifestFields, normalizeResources } from "./manifest.js";
 import type {
   DetailRow,
   NormalizedAddon,
@@ -98,22 +98,35 @@ function describeTestId(id: string, source: string | undefined): string {
   return source ? `${id} (${source})` : id;
 }
 
-function attemptRow(a: Attempt): DetailRow {
+function attemptRows(a: Attempt): DetailRow[] {
   const outcome = a.status !== undefined ? `HTTP ${a.status}` : (a.error ?? "failed");
-  return { label: "Attempt", value: `${a.route} · ${outcome} · ${a.durationMs}ms` };
+  return [
+    { label: "Attempt", value: `${a.route} · ${outcome} · ${a.durationMs}ms` },
+    ...(a.redirect ? [{ label: "Redirect", value: a.redirect }] : []),
+  ];
 }
 
-/** Rows describing one request: what was asked for, over which routes, and why it failed (only when it did). */
+/**
+ * Rows describing one request: what was asked for, over which routes, and why it failed (only when it did).
+ * A `parseError` supplies the reason unless one is given, and adds what the body looked like.
+ */
 function requestRows(
   path: string,
   attempts: Attempt[],
-  { testId, reason }: { testId?: string; reason?: string } = {},
+  {
+    testId,
+    reason,
+    parseError,
+  }: { testId?: string; reason?: string; parseError?: ParseError } = {},
 ): DetailRow[] {
+  const parsed = parseError ? describeParseError(parseError) : undefined;
+  const why = reason ?? parsed?.reason;
   return [
     { label: "Request", value: path },
     ...(testId ? [{ label: "Test ID", value: testId }] : []),
-    ...attempts.map(attemptRow),
-    ...(reason ? [{ label: "Reason", value: reason }] : []),
+    ...attempts.flatMap(attemptRows),
+    ...(why ? [{ label: "Reason", value: why }] : []),
+    ...(parsed?.details ?? []),
   ];
 }
 
@@ -155,7 +168,7 @@ async function fetchCatalogCandidate(
 
   const path = `/catalog/${picked.catalog.type}/${encodeId(picked.catalog.id)}${picked.extraPath}.json`;
   try {
-    const { status, data, attempts } = await getJson<CatalogResponse>(
+    const { status, data, parseError, attempts } = await getJson<CatalogResponse>(
       baseUrl + path,
       config.timeouts.catalog,
     );
@@ -164,6 +177,13 @@ async function fetchCatalogCandidate(
         ok: false,
         summary: `HTTP ${status}`,
         details: requestRows(path, attempts, { reason: `addon responded with HTTP ${status}` }),
+      };
+    }
+    if (parseError) {
+      return {
+        ok: false,
+        summary: describeParseError(parseError).summary,
+        details: requestRows(path, attempts, { parseError }),
       };
     }
     const metas = data?.metas ?? [];
@@ -273,24 +293,24 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
 
   // Step 1: Liveness floor.
   const manifestPath = "/manifest.json";
-  const unreachable = (reason: string, attempts: Attempt[]): ProbeResult =>
+  const manifestDown = (livenessError: string, message: string, rows: DetailRow[]): ProbeResult =>
     result(
       false,
-      `manifest unreachable (${reason})`,
+      message,
       start,
-      {
-        live: false,
-        livenessError: reason,
-        manifestDetails: requestRows(manifestPath, attempts, { reason }),
-        mode: "content",
-        perResource,
-      },
+      { live: false, livenessError, manifestDetails: rows, mode: "content", perResource },
       "manifest",
+    );
+  const unreachable = (reason: string, attempts: Attempt[], parseError?: ParseError) =>
+    manifestDown(
+      `unreachable (${reason})`,
+      `manifest unreachable (${reason})`,
+      requestRows(manifestPath, attempts, { reason, parseError }),
     );
   let live: Manifest;
   let manifestDetails: DetailRow[];
   try {
-    const { status, data, attempts } = await getJson<Manifest>(
+    const { status, data, parseError, attempts } = await getJson<unknown>(
       addon.baseUrl + manifestPath,
       config.timeouts.manifest,
     );
@@ -298,11 +318,26 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
       log.debug({ step: "manifest", status }, "manifest unreachable → DOWN");
       return unreachable(`HTTP ${status}`, attempts);
     }
+    if (parseError) {
+      const { reason } = describeParseError(parseError);
+      log.debug({ step: "manifest", status, reason }, "manifest did not parse → DOWN");
+      return unreachable(reason, attempts, parseError);
+    }
     if (!data || typeof data !== "object" || Array.isArray(data)) {
       log.debug({ step: "manifest", status }, "manifest not a JSON object → DOWN");
       return unreachable("response is not a JSON object", attempts);
     }
-    live = data;
+    const missing = missingManifestFields(data);
+    if (missing.length > 0) {
+      const verdict = `not a Stremio manifest (missing ${missing.join(", ")})`;
+      log.debug({ step: "manifest", status, missing }, "manifest shape invalid → DOWN");
+      return manifestDown(
+        verdict,
+        verdict,
+        requestRows(manifestPath, attempts, { reason: `response lacks ${missing.join(", ")}` }),
+      );
+    }
+    live = data as Manifest;
     manifestDetails = requestRows(manifestPath, attempts);
   } catch (e) {
     log.debug({ step: "manifest", err: errMsg(e) }, "manifest fetch threw → DOWN");
@@ -630,24 +665,33 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
       const path = `/meta/${test.type}/${encodeId(test.id)}.json`;
       const testId = describeTestId(test.id, test.source);
       try {
-        const { status, data, attempts } = await getJson<MetaResponse>(
+        const { status, data, parseError, attempts } = await getJson<MetaResponse>(
           addon.baseUrl + path,
           config.timeouts.meta,
         );
+        const unparsed = isOkStatus(status) ? parseError : undefined;
         const missing = missingMetaFields(data?.meta);
         const reason = !isOkStatus(status)
           ? `addon responded with HTTP ${status}`
-          : !data?.meta
-            ? "response has no meta object"
-            : missing.length > 0
-              ? `meta missing ${missing.join(", ")}`
-              : undefined;
+          : unparsed
+            ? describeParseError(unparsed).reason
+            : !data?.meta
+              ? "response has no meta object"
+              : missing.length > 0
+                ? `meta missing ${missing.join(", ")}`
+                : undefined;
         const ok = reason === undefined;
         perResource.push({
           resource: "meta",
           ok,
-          summary: ok ? "valid" : isOkStatus(status) ? "invalid" : `HTTP ${status}`,
-          details: requestRows(path, attempts, { testId, reason }),
+          summary: ok
+            ? "valid"
+            : !isOkStatus(status)
+              ? `HTTP ${status}`
+              : unparsed
+                ? describeParseError(unparsed).summary
+                : "invalid",
+          details: requestRows(path, attempts, { testId, reason, parseError: unparsed }),
         });
         log.debug(
           { step: "meta", ok, status, type: test.type, id: test.id },
@@ -670,7 +714,7 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
     const id = test.episodeId ?? test.id;
     const path = `/subtitles/${test.type}/${encodeId(id)}.json`;
     try {
-      const { data, attempts } = await getJson<{ subtitles?: unknown[] }>(
+      const { data, parseError, attempts } = await getJson<{ subtitles?: unknown[] }>(
         addon.baseUrl + path,
         config.timeouts.meta,
       );
@@ -678,10 +722,15 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
       perResource.push({
         resource: "subtitles",
         ok,
-        summary: ok ? `${data!.subtitles!.length} found` : "invalid",
+        summary: ok
+          ? `${data!.subtitles!.length} found`
+          : parseError
+            ? describeParseError(parseError).summary
+            : "invalid",
         details: requestRows(path, attempts, {
           testId: describeTestId(id, test.source),
-          reason: ok ? undefined : "response has no subtitles array",
+          reason: ok || parseError ? undefined : "response has no subtitles array",
+          parseError,
         }),
       });
       log.debug({ step: "subtitles", ok }, "subtitles check (annotation only)");

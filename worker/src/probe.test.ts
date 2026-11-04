@@ -2,10 +2,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { Manifest } from "@stremio-addon/sdk";
 import type { NormalizedAddon } from "./types.js";
 import type { TestContent } from "./idsources.js";
+import type { ParseError } from "./http.js";
 
 // --- mocks -----------------------------------------------------------------
 
-type RouteResult = { status: number; data: unknown };
+type RouteResult = { status: number; data: unknown; parseError?: ParseError; redirect?: string };
 let router: (url: string) => RouteResult;
 
 const idsourcesMock = {
@@ -13,10 +14,16 @@ const idsourcesMock = {
   resolveForPrefixes: async (_prefixes: readonly string[]): Promise<TestContent[]> => [],
 };
 
-vi.mock("./http.js", () => ({
+vi.mock("./http.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./http.js")>()),
   getJson: async (url: string) => {
-    const res = router(url);
-    return { ...res, attempts: [{ route: "direct", status: res.status, durationMs: 1 }] };
+    const { redirect, ...res } = router(url);
+    return {
+      ...res,
+      attempts: [
+        { route: "direct", status: res.status, durationMs: 1, ...(redirect ? { redirect } : {}) },
+      ],
+    };
   },
   attemptsOf: () => [],
 }));
@@ -73,6 +80,18 @@ function routes(map: Array<[string, RouteResult | (() => never)]>): (url: string
 }
 
 const manifestOk = (m: Manifest): RouteResult => ({ status: 200, data: m });
+
+/** What getJson reports for an HTML page served with HTTP 200, e.g. an unconfigured addon's landing page. */
+const HTML_PAGE: RouteResult = {
+  status: 200,
+  data: undefined,
+  parseError: {
+    html: true,
+    contentType: "text/html; charset=utf-8",
+    title: "Not found",
+    excerpt: "<!DOCTYPE html>",
+  },
+};
 
 beforeEach(() => {
   idsourcesMock.hasSourceFor = () => false;
@@ -632,15 +651,152 @@ describe("probe", () => {
 
   it("(f3) manifest that isn't a JSON object ⇒ DOWN with that reason", async () => {
     const m = addon({ resources: ["stream"], types: ["movie"] });
-    router = routes([["/manifest.json", { status: 200, data: undefined }]]);
+    router = routes([["/manifest.json", { status: 200, data: null }]]);
     const r = await probe(m);
     expect(r.success).toBe(false);
-    expect(r.detail.livenessError).toBe("response is not a JSON object");
+    expect(r.detail.livenessError).toBe("unreachable (response is not a JSON object)");
     expect(r.detail.manifestDetails).toEqual([
       { label: "Request", value: "/manifest.json" },
       { label: "Attempt", value: "direct · HTTP 200 · 1ms" },
       { label: "Reason", value: "response is not a JSON object" },
     ]);
+  });
+});
+
+describe("probe manifest validation", () => {
+  it("rejects a redirected JSON object that isn't a Stremio manifest, naming the missing fields", async () => {
+    const m = addon({ resources: ["stream"], types: ["movie"] });
+    router = routes([
+      [
+        "/manifest.json",
+        { status: 200, data: { meta: {}, payload: {} }, redirect: "plexio.stream → github.com" },
+      ],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(false);
+    expect(r.error).toBe("manifest");
+    expect(r.detail.livenessError).toBe(
+      "not a Stremio manifest (missing id, version, name, resources, types)",
+    );
+    expect(r.detail.manifestDetails).toEqual([
+      { label: "Request", value: "/manifest.json" },
+      { label: "Attempt", value: "direct · HTTP 200 · 1ms" },
+      { label: "Redirect", value: "plexio.stream → github.com" },
+      { label: "Reason", value: "response lacks id, version, name, resources, types" },
+    ]);
+  });
+
+  it("rejects an empty JSON object", async () => {
+    const m = addon({});
+    router = routes([["/manifest.json", { status: 200, data: {} }]]);
+    const r = await probe(m);
+    expect(r.success).toBe(false);
+    expect(r.message).toBe("not a Stremio manifest (missing id, version, name, resources, types)");
+  });
+
+  it("accepts a manifest without description or catalogs", async () => {
+    const m = addon({});
+    const { description: _d, catalogs: _c, ...bare } = m.manifest;
+    router = routes([["/manifest.json", { status: 200, data: bare }]]);
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(r.detail.skipReason).toBe("no testable resource");
+  });
+
+  it("reports an HTML manifest as an HTML page with its title", async () => {
+    const m = addon({});
+    router = routes([["/manifest.json", HTML_PAGE]]);
+    const r = await probe(m);
+    expect(r.success).toBe(false);
+    expect(r.detail.livenessError).toBe("unreachable (HTML page instead of JSON)");
+    expect(r.detail.manifestDetails.slice(2)).toEqual([
+      { label: "Reason", value: "HTML page instead of JSON" },
+      { label: "Content-Type", value: "text/html; charset=utf-8" },
+      { label: "Page title", value: "Not found" },
+    ]);
+  });
+});
+
+describe("probe unparsable bodies", () => {
+  it("reports a malformed catalog as not valid JSON, not as empty", async () => {
+    const m = addon({
+      types: ["series"],
+      idPrefixes: ["tt38813105"],
+      resources: [
+        { name: "catalog", types: ["series"], idPrefixes: ["tt38813105"] },
+        { name: "meta", types: ["series"], idPrefixes: ["tt38813105"] },
+      ],
+      catalogs: [{ type: "series", id: "seen_catalog", name: "SEEN Studio", extra: [] }],
+    });
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/catalog/series/seen_catalog.json",
+        {
+          status: 200,
+          data: undefined,
+          parseError: {
+            html: false,
+            contentType: "application/json; charset=utf-8",
+            excerpt: '{ "metas": [ { "id": "tt38813105", "type": "series", "name": "Still",',
+          },
+        },
+      ],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(false);
+    const catalog = r.detail.perResource.find((p) => p.resource === "catalog");
+    expect(catalog?.summary).toBe("not valid JSON");
+    expect(catalog?.details).toContainEqual({
+      label: "Reason",
+      value: "response is not valid JSON",
+    });
+    expect(catalog?.details).toContainEqual({
+      label: "Content-Type",
+      value: "application/json; charset=utf-8",
+    });
+  });
+
+  it("reports an HTML meta answer as an HTML page", async () => {
+    const m = addon({
+      types: ["movie"],
+      resources: ["catalog", "meta"],
+      catalogs: [{ type: "movie", id: "top", name: "Top" }],
+    });
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/catalog/movie/top.json",
+        { status: 200, data: { metas: [{ id: "x1", type: "movie", name: "X" }] } },
+      ],
+      ["/meta/movie/x1.json", HTML_PAGE],
+    ]);
+    const r = await probe(m);
+    const meta = r.detail.perResource.find((p) => p.resource === "meta");
+    expect(meta?.ok).toBe(false);
+    expect(meta?.summary).toBe("HTML page");
+    expect(meta?.details).toContainEqual({ label: "Reason", value: "HTML page instead of JSON" });
+  });
+
+  it("annotates an HTML subtitles answer as an HTML page", async () => {
+    const m = addon({
+      types: ["movie"],
+      resources: ["catalog", "subtitles"],
+      catalogs: [{ type: "movie", id: "top", name: "Top" }],
+    });
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/catalog/movie/top.json",
+        { status: 200, data: { metas: [{ id: "x1", type: "movie", name: "X" }] } },
+      ],
+      ["/subtitles/movie/x1.json", HTML_PAGE],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    const subs = r.detail.perResource.find((p) => p.resource === "subtitles");
+    expect(subs?.summary).toBe("HTML page");
+    expect(subs?.details).toContainEqual({ label: "Page title", value: "Not found" });
   });
 });
 

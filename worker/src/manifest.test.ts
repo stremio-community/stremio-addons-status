@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Manifest } from "@stremio-addon/sdk";
-import { normalizeResources, resourceAccepts } from "./manifest.js";
+import { missingManifestFields, normalizeResources, resourceAccepts } from "./manifest.js";
 
 const manifest = (m: Partial<Manifest>): Manifest =>
   ({ id: "x", name: "x", version: "1", types: [], catalogs: [], resources: [], ...m }) as Manifest;
@@ -54,5 +54,29 @@ describe("resourceAccepts", () => {
         "kitsu:7442:1",
       ),
     ).toBe(true);
+  });
+});
+
+describe("missingManifestFields", () => {
+  it("accepts a minimal manifest without description or catalogs", () => {
+    expect(
+      missingManifestFields({ id: "x", version: "1.0.0", name: "X", resources: [], types: [] }),
+    ).toEqual([]);
+  });
+
+  it("names every field a non-manifest JSON object lacks", () => {
+    expect(missingManifestFields({ meta: {}, payload: {} })).toEqual([
+      "id",
+      "version",
+      "name",
+      "resources",
+      "types",
+    ]);
+  });
+
+  it("rejects a field of the wrong type", () => {
+    expect(
+      missingManifestFields({ id: "x", version: 1, name: "X", resources: "stream", types: [] }),
+    ).toEqual(["version", "resources"]);
   });
 });

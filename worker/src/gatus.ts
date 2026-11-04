@@ -223,9 +223,7 @@ export function buildConditions(r: ProbeResult, baseUrl: string): ConditionResul
 
   const conditions = [
     condition(
-      live
-        ? "manifest: reachable"
-        : `manifest: unreachable${livenessError ? ` (${livenessError})` : ""}`,
+      `manifest: ${live ? "reachable" : (livenessError ?? "unreachable")}`,
       live,
       manifestDetails,
     ),

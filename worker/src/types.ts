@@ -41,7 +41,7 @@ export interface ProbeResult {
   error?: string;
   detail: {
     live: boolean;
-    /** Why the liveness floor failed, set only when live is false. */
+    /** The manifest's verdict when the liveness floor failed (e.g. `unreachable (HTTP 502)`), set only when live is false. */
     livenessError?: string;
     /** How the manifest request went; empty when the probe never got that far. */
     manifestDetails: DetailRow[];
