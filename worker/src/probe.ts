@@ -55,6 +55,7 @@ import {
   type StreamClass,
 } from "./streams.js";
 import { checkSubtitles, subtitleTargets, translatesSubtitles } from "./subtitles.js";
+import { otherTitle, type OtherTitle } from "./titles.js";
 import { unconfiguredReason, type ContentAnswer } from "./unconfigured.js";
 import {
   checkUrl,
@@ -460,6 +461,8 @@ interface StreamFetch {
   /** Unset when the request threw. */
   answer?: JsonResult<StreamResponse>;
   verification?: Verification;
+  /** Set when a borrowed title's streams name another title. */
+  otherTitle?: OtherTitle;
 }
 
 /** An addon answering an ID no title can have with streams: it pastes the ID into a template rather than looking anything up. */
@@ -629,9 +632,23 @@ function judgeStreamFetch(
     links,
     notice,
     summary,
-    details: [...rows(reason), ...verificationRows(v)],
+    details: [...rows(reason), ...verificationRows(v), ...otherTitleRows(f, streams)],
     answeredInMs,
   };
+}
+
+function otherTitleRows(f: StreamFetch, streams: StreamClass[]): DetailRow[] {
+  if (!f.otherTitle) return [];
+  const named = streams.filter(
+    (c, i) => (c.kind === "playable" || c.kind === "link") && f.otherTitle!.streams[i],
+  ).length;
+  if (named === 0) return [];
+  return [
+    {
+      label: "Note",
+      value: `wrong title: ${named} of ${plural(streams.length, "stream")} name ${f.otherTitle.title}`,
+    },
+  ];
 }
 
 /**
@@ -975,7 +992,18 @@ async function fetchStream(ctx: ProbeContext, target: StreamTarget): Promise<Str
     const raw = Array.isArray(data?.streams) ? data!.streams! : [];
     const streams = raw.map((st) => classifyStream(st, { baseUrl: ctx.base }));
     const unparsed = isOkStatus(status) ? parseError : undefined;
-    return { ...request, status, attempts, streams, parseError: unparsed, answer };
+    // Only a borrowed title's ID source knows the name; an addon's own titles are what it lists.
+    const other =
+      target.origin === "borrowed" && target.names ? otherTitle(raw, target.names) : undefined;
+    return {
+      ...request,
+      status,
+      attempts,
+      streams,
+      parseError: unparsed,
+      answer,
+      ...(other ? { otherTitle: other } : {}),
+    };
   } catch (e) {
     return {
       ...request,
