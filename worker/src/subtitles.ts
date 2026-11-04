@@ -24,7 +24,7 @@ import {
   type PlaceholderKind,
 } from "./streams.js";
 import type { DetailRow, PerResourceResult } from "./types.js";
-import type { ContentAnswer } from "./unconfigured.js";
+import { missingRouteStatus, type ContentAnswer } from "./unconfigured.js";
 import { isProtectedUrl } from "./urlcheck.js";
 import { encodeId } from "./utils.js";
 
@@ -668,6 +668,16 @@ interface TitleCheck {
   timedOut: boolean;
   /** Listed, but its file is generated on request, so it wasn't fetched. */
   unfetched?: boolean;
+  /** Its request with extras failed like a missing route while the bare one answered. */
+  noExtrasRoute?: boolean;
+}
+
+/** How a request failed like a route that isn't mounted: a 404 page, or the HTML page a single-page app serves for any path. */
+function describeMissingRoute(answer: ContentAnswer | undefined): string | undefined {
+  if (!answer) return undefined;
+  if (missingRouteStatus(answer, []) === 404) return "HTTP 404";
+  if (answer.status >= 200 && answer.status < 300 && answer.parseError?.html) return "an HTML page";
+  return undefined;
 }
 
 async function fetchListing(
@@ -707,17 +717,29 @@ async function checkTitle(
   const best = listings.reduce((a, b) => (listingRank(b) > listingRank(a) ? b : a));
   const others = listings.filter((l) => l !== best).map((l) => alsoTriedRow(l.path, l.summary));
   const attempts = listings.flatMap((l) => l.attempts);
+  const [withExtras, bare] = listings;
+  const extrasFailure =
+    bare && bare.outcome !== "failed" ? describeMissingRoute(withExtras.answer) : undefined;
+  const extrasNote: DetailRow[] = extrasFailure
+    ? [
+        {
+          label: "Note",
+          value: `no extras route (Stremio sends extras): the request with a filename answered ${extrasFailure}`,
+        },
+      ]
+    : [];
   const check: TitleCheck = {
     target: t,
     outcome: best.outcome === "listed" ? "passed" : best.outcome,
     path: best.path,
     summary: best.summary,
-    details: [...best.details, ...others],
+    details: [...best.details, ...others, ...extrasNote],
     notice: best.notice,
     answers: listings.map((l) => l.answer),
     answeredInMs: best.answer && answerTime(best.answer),
     unanswered: listings.every((l) => !l.answer),
     timedOut: attempts.some((a) => a.timedOut),
+    noExtrasRoute: extrasFailure !== undefined,
   };
   if (best.outcome !== "listed" || !sniff) return check;
   const entry = best.real.find((e) => mayFetch(e, base, onDemand));
@@ -780,6 +802,8 @@ export async function checkSubtitles(
   const best = titles.reduce((a, b) => (TITLE_RANK[b.outcome] > TITLE_RANK[a.outcome] ? b : a));
   const others = titles.filter((c) => c !== best);
   const passed = best.outcome === "passed";
+  const titleCount = others.length > 0 && !passed ? ` (${titles.length} titles)` : "";
+  const extrasAnnotation = best.noExtrasRoute ? " · no extras route" : "";
   const details = [
     ...best.details,
     ...others.map((c) => alsoTriedRow(describeTestId(c.path, c.target.source), c.summary)),
@@ -800,7 +824,7 @@ export async function checkSubtitles(
     result: {
       resource: "subtitles",
       ok: verdict.kind !== "down",
-      summary: `${best.target.type} ${best.summary}${others.length > 0 && !passed ? ` (${titles.length} titles)` : ""}`,
+      summary: `${best.target.type} ${best.summary}${titleCount}${extrasAnnotation}`,
       details,
     },
     verdict,

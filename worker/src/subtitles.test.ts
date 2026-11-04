@@ -455,6 +455,36 @@ describe("checkSubtitles", () => {
     });
   });
 
+  it("notes an addon that answers only the bare form, since Stremio sends extras when it knows them (ترجمة عربية مجمّعة)", async () => {
+    h.listings.set(INCEPTION_EXTRA, HTML_404);
+    h.listings.set(INCEPTION_BARE, subs(polish(2)));
+    h.files.set("https://napisy24.test/download/0.srt", file(ENGLISH));
+    const c = await checkSubtitles(BASE, [INCEPTION], options);
+    expect(c?.verdict).toEqual({ kind: "content" });
+    expect(c?.result).toMatchObject({ ok: true, summary: "movie 2 found · no extras route" });
+    expect(c?.result.details).toContainEqual({
+      label: "Note",
+      value:
+        "no extras route (Stremio sends extras): the request with a filename answered HTTP 404",
+    });
+  });
+
+  it("notes an extras request answered by the page a single-page app serves for any path", async () => {
+    h.listings.set(INCEPTION_EXTRA, { ...HTML_404, status: 200 });
+    h.listings.set(INCEPTION_BARE, subs([]));
+    const c = await checkSubtitles(BASE, [INCEPTION], options);
+    expect(c?.verdict).toEqual({ kind: "empty" });
+    expect(c?.result.summary).toBe("movie 0 found · no extras route");
+  });
+
+  it("doesn't blame the extras route when the bare form fails too", async () => {
+    h.listings.set(INCEPTION_EXTRA, HTML_404);
+    h.listings.set(INCEPTION_BARE, HTML_404);
+    const c = await checkSubtitles(BASE, [INCEPTION], options);
+    expect(c?.verdict).toEqual({ kind: "down" });
+    expect(c?.result.summary).toBe("movie HTTP 404");
+  });
+
   it("passes on its listing when its file can't be fetched, noting why", async () => {
     h.listings.set(INCEPTION_EXTRA, subs(polish(2)));
     const c = await checkSubtitles(BASE, [INCEPTION], options);
