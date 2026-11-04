@@ -1636,8 +1636,29 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
     if (fetches.length === 0) {
       const catalogsFailed =
         attempts.length > 0 && attempts.every((a) => a.kind === "failed" || a.kind === "empty");
-      if (!(ownCatalogsOnly && catalogsFailed)) {
-        const skips = new Set(probes.flatMap((p) => [...p.skips]));
+      const skips = new Set(probes.flatMap((p) => [...p.skips]));
+      // Its titles play through the user's other addons, so the catalogs a user browses are what the addon does.
+      const handsTitlesOn =
+        ownCatalogsOnly && skips.has("out-of-scope") && attempts.some((a) => a.kind === "items");
+      if (handsTitlesOn) {
+        primary = "catalog";
+        perResource.push({
+          resource: "stream",
+          ok: true,
+          summary: "no ID in stream scope",
+          details: [
+            ...probes.flatMap((p) => p.notes),
+            {
+              label: "Note",
+              value: "no own title is in the stream resource's scope; judged on its catalogs",
+            },
+          ],
+        });
+        log.debug(
+          { step: "catalog" },
+          "own titles all outside the stream scope: judged on catalogs",
+        );
+      } else if (!(ownCatalogsOnly && catalogsFailed)) {
         return livenessOnly(
           skips.has("no-episode")
             ? "no episode ID for the addon's titles"
@@ -1645,11 +1666,12 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
               ? "no test ID in the stream resource's scope"
               : "no test ID source for stream prefixes",
         );
+      } else {
+        // The addon's own catalogs are its only ID source, and they are what a user browses: their failure is the addon's.
+        primary = "catalog";
+        perResource.find((r) => r.resource === "catalog")!.details.push(OWN_CATALOGS_ONLY_NOTE);
+        log.debug({ step: "catalog" }, "own catalogs, the only ID source, all failed");
       }
-      // The addon's own catalogs are its only ID source, and they are what a user browses: their failure is the addon's.
-      primary = "catalog";
-      perResource.find((r) => r.resource === "catalog")!.details.push(OWN_CATALOGS_ONLY_NOTE);
-      log.debug({ step: "catalog" }, "own catalogs, the only ID source, all failed");
     } else {
       const checks = judgeStreamFetches(fetches, ctx.configurable, ctx.sameStreamsForEveryTitle);
       const checkOf = new Map(fetches.map((f, i) => [f, checks[i]]));

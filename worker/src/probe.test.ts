@@ -2063,7 +2063,7 @@ describe("probe test-ID scope", () => {
     expect(r.message).toContain("meta: valid");
   });
 
-  it("drops an episode its meta hands to other addons' IDs, leaving no test ID rather than a failure (Sitcom Surprise)", async () => {
+  it("judges an addon on its catalogs when its meta hands every own title to other addons' IDs (Sitcom Surprise)", async () => {
     const m = addon({
       types: ["series"],
       resources: [
@@ -2104,9 +2104,40 @@ describe("probe test-ID scope", () => {
     };
     const r = await probe(m);
     expect(r.success).toBe(true);
-    expect(r.detail.mode).toBe("liveness-only");
-    expect(r.detail.skipReason).toBe("no test ID in the stream resource's scope");
+    expect(r.detail.mode).toBe("content");
+    expect(r.detail.primary).toBe("catalog");
+    const stream = r.detail.perResource.find((p) => p.resource === "stream");
+    expect(stream?.summary).toBe("no ID in stream scope");
+    expect(stream?.details).toContainEqual({
+      label: "Skipped",
+      value: "tt0386676:2:7: outside the stream resource's scope",
+    });
     expect(requested.some((u) => u.includes("/stream/"))).toBe(false);
+  });
+
+  it("stays liveness-only when no own title is in the stream resource's scope and the catalogs list only notices", async () => {
+    const m = addon({
+      types: ["series"],
+      resources: [
+        "catalog",
+        { name: "meta", types: ["series"], idPrefixes: ["shuffle:"] },
+        { name: "stream", types: ["series"], idPrefixes: ["shuffle:"] },
+      ],
+      catalogs: [{ type: "series", id: "shuffle", name: "Shuffle" }],
+    });
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/catalog/series/shuffle.json",
+        {
+          status: 200,
+          data: { metas: [{ id: "shuffle:donate", type: "series", name: "Buy me a coffee" }] },
+        },
+      ],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(r.detail.mode).toBe("liveness-only");
   });
 
   it("tests a navigation addon with a borrowed movie when its own episodes are outside its stream scope (Watch Order)", async () => {
