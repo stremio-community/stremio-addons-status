@@ -16,6 +16,7 @@ import {
   type ParseError,
 } from "./http.js";
 import { encodeId, errMsg } from "./utils.js";
+import { corsAnnotation, STREMIO_WEB_HEADERS } from "./cors.js";
 import { candidatesFor, hasSourceFor, type TestContent } from "./idsources.js";
 import { logger, type Logger } from "./logger.js";
 import {
@@ -1005,6 +1006,7 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
   try {
     const answer = await getJson<unknown>(base + manifestPath, config.timeouts.manifest, {
       retry: true,
+      headers: STREMIO_WEB_HEADERS,
     });
     const { status, data, parseError, attempts } = answer;
     if (!isOkStatus(status)) {
@@ -1033,6 +1035,8 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
     }
     live = data as Manifest;
     manifestAttempts = attempts;
+    const cors = corsAnnotation(manifestPath, answer.allowOrigin);
+    if (cors) perResource.push(cors);
     manifestDetails = requestRows(manifestPath, attempts);
     if (override?.testConfig) {
       manifestDetails.push({ label: "Note", value: "probed with a public test config" });

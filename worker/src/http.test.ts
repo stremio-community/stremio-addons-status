@@ -7,6 +7,7 @@ type FakeResponse = {
   contentType?: string;
   url?: string;
   retryAfter?: string;
+  allowOrigin?: string;
 };
 
 // Shared, hoisted so the vi.mock factories below can reference them.
@@ -15,6 +16,7 @@ const h = vi.hoisted(() => ({
   state: {
     handler: (_url: string, _viaProxy: boolean): FakeResponse => ({ status: 200, body: "{}" }),
     calls: [] as boolean[],
+    headers: [] as Array<Record<string, string>>,
     sleeps: [] as number[],
   },
 }));
@@ -28,9 +30,10 @@ vi.mock("./utils.js", async (importOriginal) => ({
 
 vi.mock("fetch-socks", () => ({ socksDispatcher: () => h.PROXY }));
 vi.mock("undici", () => ({
-  fetch: async (url: string, opts: { dispatcher?: unknown }) => {
+  fetch: async (url: string, opts: { dispatcher?: unknown; headers?: Record<string, string> }) => {
     const viaProxy = opts?.dispatcher === h.PROXY;
     h.state.calls.push(viaProxy);
+    h.state.headers.push(opts?.headers ?? {});
     const r = h.state.handler(url, viaProxy);
     return {
       status: r.status,
@@ -38,6 +41,7 @@ vi.mock("undici", () => ({
       headers: new Headers({
         ...(r.contentType ? { "content-type": r.contentType } : {}),
         ...(r.retryAfter !== undefined ? { "retry-after": r.retryAfter } : {}),
+        ...(r.allowOrigin !== undefined ? { "access-control-allow-origin": r.allowOrigin } : {}),
       }),
       text: async () => r.body,
     };
@@ -68,6 +72,7 @@ const CHALLENGE_PAGE = `<!DOCTYPE html><html lang="en-US"><head><title>Just a mo
 beforeEach(() => {
   h.state.handler = () => ({ status: 200, body: "{}" });
   h.state.calls = [];
+  h.state.headers = [];
   h.state.sleeps = [];
 });
 
@@ -267,6 +272,30 @@ describe("getJson WARP-first fallback", () => {
     const r = await getJson("http://addon/manifest.json", 1000);
     expect(r.status).toBe(200);
     expect(r.data).toBeUndefined();
+  });
+});
+
+describe("getJson headers", () => {
+  it("sends extra request headers on every route and exposes Access-Control-Allow-Origin", async () => {
+    h.state.handler = scripted(
+      [{ status: 403, body: "{}" }],
+      [{ status: 200, body: "{}", allowOrigin: "*" }],
+    );
+    const r = await getJson("https://a.test/manifest.json", 1000, {
+      headers: { Origin: "https://web.stremio.com" },
+    });
+    expect(r.allowOrigin).toBe("*");
+    expect(h.state.headers.map((x) => x.Origin)).toEqual([
+      "https://web.stremio.com",
+      "https://web.stremio.com",
+    ]);
+    expect(h.state.headers[0]["User-Agent"]).toMatch(/Stremio-Addons-Status/);
+  });
+
+  it("leaves allowOrigin unset when the answer carries no such header", async () => {
+    h.state.handler = () => ({ status: 200, body: "{}" });
+    const r = await getJson("https://a.test/manifest.json", 1000);
+    expect(r).not.toHaveProperty("allowOrigin");
   });
 });
 

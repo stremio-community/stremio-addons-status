@@ -15,6 +15,7 @@ type RouteResult = {
   /** Replaces the single direct attempt the mock reports by default. */
   attempts?: Attempt[];
   softBlockedOn?: Route;
+  allowOrigin?: string;
 };
 let router: (url: string, options: GetJsonOptions<unknown>) => RouteResult | Promise<RouteResult>;
 /** The options of every getJson call, by URL. */
@@ -96,7 +97,7 @@ function routes(map: Array<[string, RouteResult | (() => never)]>): (url: string
   };
 }
 
-const manifestOk = (m: Manifest): RouteResult => ({ status: 200, data: m });
+const manifestOk = (m: Manifest): RouteResult => ({ status: 200, data: m, allowOrigin: "*" });
 
 /** What getJson reports for an HTML page served with HTTP 200, e.g. an unconfigured addon's landing page. */
 const HTML_PAGE: RouteResult = {
@@ -2735,7 +2736,10 @@ describe("probe transport", () => {
       ["/stream/movie/tt0111161.json", { status: 200, data: { streams: [PLAYABLE] } }],
     ]);
     await probe(m);
-    expect(requestOptions.get(`${BASE}/manifest.json`)).toEqual({ retry: true });
+    expect(requestOptions.get(`${BASE}/manifest.json`)).toEqual({
+      retry: true,
+      headers: { Origin: "https://web.stremio.com" },
+    });
   });
 
   it("reports a manifest rate limited on every try as rate limited (Torrentio instance)", async () => {
@@ -3087,5 +3091,53 @@ describe("probe transport", () => {
     expect(r.detail.perResource.find((p) => p.resource === "catalog")?.summary).toBe(
       "1 metas · slow (17 s)",
     );
+  });
+});
+
+describe("probe CORS", () => {
+  const scraper = () => {
+    idsourcesMock.hasSourceFor = () => true;
+    idsourcesMock.candidatesFor = async () => [{ type: "movie", id: "tt0111161" }];
+    return addon({
+      types: ["movie"],
+      resources: [{ name: "stream", types: ["movie"], idPrefixes: ["tt"] }],
+    });
+  };
+
+  it("annotates a manifest Stremio Web can't read without changing the verdict (Cinemata Remover)", async () => {
+    const m = scraper();
+    router = routes([
+      ["/manifest.json", { status: 200, data: m.manifest }],
+      ["/stream/movie/tt0111161.json", { status: 200, data: { streams: [PLAYABLE] } }],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(r.detail.primary).toBe("stream");
+    expect(r.detail.perResource.find((x) => x.resource === "cors")).toMatchObject({
+      ok: false,
+      summary: "missing, fails in Stremio Web",
+    });
+  });
+
+  it("annotates an addon that needs configuration too (Cast List)", async () => {
+    const m = addon({
+      types: ["movie"],
+      resources: ["stream"],
+      behaviorHints: { configurable: true, configurationRequired: true },
+    });
+    router = routes([["/manifest.json", { status: 200, data: m.manifest }]]);
+    const r = await probe(m);
+    expect(r.detail.mode).toBe("needs-config");
+    expect(r.detail.perResource.map((x) => x.resource)).toEqual(["cors"]);
+  });
+
+  it("says nothing when the manifest allows Stremio Web's origin", async () => {
+    const m = scraper();
+    router = routes([
+      ["/manifest.json", { status: 200, data: m.manifest, allowOrigin: "https://web.stremio.com" }],
+      ["/stream/movie/tt0111161.json", { status: 200, data: { streams: [PLAYABLE] } }],
+    ]);
+    const r = await probe(m);
+    expect(r.detail.perResource.map((x) => x.resource)).not.toContain("cors");
   });
 });

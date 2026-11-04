@@ -52,6 +52,8 @@ export interface JsonResult<T> {
   attempts: Attempt[];
   /** The route whose 2xx answer wasn't `usable` when the other route's answer was, so the result came from the other route. */
   softBlockedOn?: Route;
+  /** The answer's `Access-Control-Allow-Origin`, unset when it sent none. */
+  allowOrigin?: string;
 }
 
 /** Thrown when every attempted route failed at the transport level, so callers can still report what was tried. */
@@ -130,9 +132,10 @@ async function fetchJson<T>(
   url: string,
   timeout: number,
   dispatcher: Dispatcher | undefined,
+  headers: Record<string, string> = {},
 ): Promise<Answer<T> & { redirect?: string; retryAfterMs?: number }> {
   const res = await fetch(url, {
-    headers: { "User-Agent": USER_AGENT, Accept: "application/json" },
+    headers: { "User-Agent": USER_AGENT, Accept: "application/json", ...headers },
     redirect: "follow",
     signal: AbortSignal.timeout(timeout),
     dispatcher,
@@ -140,7 +143,12 @@ async function fetchJson<T>(
   const text = await res.text();
   const redirect = redirectOf(url, res.url);
   const retryAfterMs = retryAfterOf(res.headers.get("retry-after"));
-  const extra = { redirect, ...(retryAfterMs !== undefined ? { retryAfterMs } : {}) };
+  const allowOrigin = res.headers.get("access-control-allow-origin");
+  const extra = {
+    redirect,
+    ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+    ...(allowOrigin !== null ? { allowOrigin } : {}),
+  };
   try {
     return { status: res.status, data: JSON.parse(text) as T, ...extra };
   } catch {
@@ -172,6 +180,8 @@ export interface GetJsonOptions<T> {
   retry?: boolean;
   /** Whether a parsed 2xx answer has content worth having; an unusable one sends the request to the other route as well. */
   usable?: (data: T) => boolean;
+  /** Sent on every try besides the worker's own User-Agent and Accept. */
+  headers?: Record<string, string>;
 }
 
 /** How settled one try leaves the request; the best try wins, the latest among equals. */
@@ -201,7 +211,7 @@ interface Try<T> {
 export async function getJson<T = unknown>(
   url: string,
   timeout: number,
-  { retry = false, usable }: GetJsonOptions<T> = {},
+  { retry = false, usable, headers }: GetJsonOptions<T> = {},
 ): Promise<JsonResult<T>> {
   const attempts: Attempt[] = [];
   const tries: Try<T>[] = [];
@@ -217,7 +227,7 @@ export async function getJson<T = unknown>(
     const start = Date.now();
     let fetched: Awaited<ReturnType<typeof fetchJson<T>>>;
     try {
-      fetched = await fetchJson<T>(url, timeout, dispatcherOf(route));
+      fetched = await fetchJson<T>(url, timeout, dispatcherOf(route), headers);
     } catch (error) {
       const timedOut = isTimeout(error);
       attempts.push({
