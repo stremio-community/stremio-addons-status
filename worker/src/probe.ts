@@ -499,7 +499,11 @@ interface Verification {
   linkPage?: LinkPage;
 }
 
-type Placeholder = Extract<StreamClass, { kind: "placeholder" }> & { repeated?: boolean };
+/** `linkPage`: read from the page a templated link opens rather than from the stream itself. */
+type Placeholder = Extract<StreamClass, { kind: "placeholder" }> & {
+  repeated?: boolean;
+  linkPage?: boolean;
+};
 
 /**
  * `content`: at least one real playable stream.
@@ -683,6 +687,7 @@ function linkPageNotice(page: LinkPage | undefined): Placeholder | undefined {
     placeholder: page.placeholder,
     fingerprint: "",
     label: page.label ?? page.host,
+    linkPage: true,
   };
 }
 
@@ -765,6 +770,11 @@ function streamVerdict(checks: StreamCheckResult[]): StreamVerdict {
   if (checks.some((c) => c.outcome === "content")) return { kind: "content" };
   // Streams meant to play that can't outweigh links that only open a browser.
   if (checks.some((c) => c.outcome === "dead")) return { kind: "down" };
+  // A templated link's page shows what any title gets, though a popular one may be cached.
+  const page = strongestPlaceholder(checks.flatMap((c) => (c.notice?.linkPage ? c.notice : [])));
+  if (page?.placeholder === "needs-config" || page?.placeholder === "error") {
+    return { kind: page.placeholder, reason: page.label };
+  }
   if (checks.some((c) => c.outcome === "links")) return { kind: "links" };
   const notice = strongestPlaceholder(checks.flatMap((c) => c.notice ?? []));
   if (notice?.placeholder === "error") return { kind: "error", reason: notice.label };

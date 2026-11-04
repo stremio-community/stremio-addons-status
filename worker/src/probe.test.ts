@@ -3411,12 +3411,16 @@ describe("probe stream URL checks", () => {
     });
 
     it("reports a templated link whose page asks for an API key as needing configuration (Content Deep Dive Companion)", async () => {
-      urlcheckMock.followLink = async () => ({
-        host: "deepdive.test",
-        status: 200,
-        label: "API Key Required - Content Deep Dive",
-        placeholder: "needs-config",
-      });
+      // A popular title's deep dive is cached, so only the other title's page asks for a key.
+      urlcheckMock.followLink = async (url) =>
+        url.includes("tt0111161")
+          ? { host: "deepdive.test", status: 200, label: "Deep Dive: The Shawshank Redemption" }
+          : {
+              host: "deepdive.test",
+              status: 200,
+              label: "API Key Required - Content Deep Dive",
+              placeholder: "needs-config",
+            };
       const { r } = await probeTemplated((_type, id) => [
         {
           name: "🔍 Deep Dive Analysis",
