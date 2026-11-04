@@ -48,6 +48,32 @@ describe("buildConditions", () => {
     ]);
   });
 
+  it("adds a failing condition from the message when a DOWN result has none", () => {
+    const down: ProbeResult = {
+      ...verdict({ live: true, mode: "content", primary: "meta", perResource: [] }),
+      success: false,
+      message: "manifest up · meta check failed",
+    };
+    expect(buildConditions(down, BASE)).toEqual([
+      { condition: "manifest: reachable", success: true },
+      { condition: "manifest up · meta check failed", success: false },
+    ]);
+  });
+
+  it("adds nothing to a DOWN result that already carries a failing condition", () => {
+    const down: ProbeResult = {
+      ...verdict({
+        live: false,
+        livenessError: "unreachable (HTTP 502)",
+        mode: "content",
+        perResource: [],
+      }),
+      success: false,
+      message: "manifest unreachable (HTTP 502)",
+    };
+    expect(buildConditions(down, BASE)).toHaveLength(1);
+  });
+
   it("explains why the content tier was skipped in liveness-only mode", () => {
     expect(
       buildConditions(

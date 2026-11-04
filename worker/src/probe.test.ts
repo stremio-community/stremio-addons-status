@@ -800,6 +800,43 @@ describe("probe unparsable bodies", () => {
   });
 });
 
+describe("probe without a test ID for the primary resource", () => {
+  it("meta-primary, no catalogs, unknown prefix ⇒ liveness-only", async () => {
+    const m = addon({
+      types: ["other"],
+      idPrefixes: ["pl_id:"],
+      resources: ["catalog", "meta"],
+      catalogs: [],
+      behaviorHints: { configurable: true },
+    });
+    router = routes([["/manifest.json", manifestOk(m.manifest)]]);
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(r.detail.mode).toBe("liveness-only");
+    expect(r.detail.skipReason).toBe("no test ID for meta");
+  });
+
+  it("catalog-primary whose every catalog needs an input the worker can't give ⇒ liveness-only", async () => {
+    const m = addon({
+      types: ["movie"],
+      resources: ["catalog"],
+      catalogs: [
+        {
+          type: "movie",
+          id: "by-user",
+          name: "By user",
+          extra: [{ name: "user", isRequired: true }],
+        },
+      ],
+    });
+    router = routes([["/manifest.json", manifestOk(m.manifest)]]);
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(r.detail.mode).toBe("liveness-only");
+    expect(r.detail.skipReason).toBe("no testable catalog");
+  });
+});
+
 describe("probe detail rows", () => {
   it("lists each stream request with its borrowed test ID, routes tried and failure reason", async () => {
     const m = addon({

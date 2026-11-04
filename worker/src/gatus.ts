@@ -240,6 +240,10 @@ export function buildConditions(r: ProbeResult, baseUrl: string): ConditionResul
   if (skipReason) {
     conditions.push(condition(`content: not deep-checked (${skipReason})`, true));
   }
+  // A red result must say why on the status page and in the alert, even when the probe recorded no failing check.
+  if (!r.success && conditions.every((c) => c.success)) {
+    conditions.push(condition(r.message || "probe failed", false));
+  }
   return conditions;
 }
 

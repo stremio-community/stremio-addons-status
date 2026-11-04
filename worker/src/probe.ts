@@ -762,6 +762,13 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
     });
   }
 
+  if (!primaryResult) {
+    // Nothing could be asked of the primary resource, which says nothing about whether it works.
+    return livenessOnly(
+      primary === "catalog" ? "no testable catalog" : `no test ID for ${primary}`,
+    );
+  }
+
   // Manifest up but primary content failed.
   // The log message carries the full per-resource breakdown, not just the primary, so a DOWN is explainable from the logs alone.
   const breakdown = perResource.map((r) => `${r.resource}: ${r.summary}`).join(" · ");
