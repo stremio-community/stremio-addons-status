@@ -3958,7 +3958,7 @@ describe("probe stream URL checks", () => {
       ]);
       expect(r.success).toBe(true);
       expect(r.detail.mode).toBe("content");
-      expect(opened).toHaveLength(2);
+      expect(opened).toHaveLength(3);
       expect(streamOf(r)?.summary).toBe(
         "movie 0 playable, 1 link of 1 · series 0 playable, 1 link of 1 · templated links",
       );
@@ -3994,6 +3994,32 @@ describe("probe stream URL checks", () => {
       expect(r.success).toBe(true);
       expect(r.detail.mode).toBe("needs-config");
       expect(r.detail.configReason).toBe("API Key Required - Content Deep Dive");
+    });
+
+    it("reads the nonexistent ID's link page too, so cached pages of popular titles can't hide an API key notice (Content Deep Dive Companion)", async () => {
+      const opened: string[] = [];
+      urlcheckMock.followLink = async (url) => {
+        opened.push(url);
+        return url.includes("tt9999999999")
+          ? {
+              host: "deepdive.test",
+              status: 200,
+              label: "API Key Required - Content Deep Dive",
+              placeholder: "needs-config",
+            }
+          : { host: "deepdive.test", status: 200, label: "Deep Dive: a cached title" };
+      };
+      const { r } = await probeTemplated((_type, id) => [
+        {
+          name: "🔍 Deep Dive Analysis",
+          description: "Open detailed content analysis in browser",
+          externalUrl: `https://deepdive.test/deep_dive/${id}`,
+        },
+      ]);
+      expect(r.success).toBe(true);
+      expect(r.detail.mode).toBe("needs-config");
+      expect(r.detail.configReason).toBe("API Key Required - Content Deep Dive");
+      expect(opened.filter((u) => u.includes("tt9999999999"))).toHaveLength(1);
     });
 
     it("does not open the links of an addon that answers nothing for a nonexistent ID (IMDb ratings)", async () => {

@@ -466,6 +466,8 @@ interface Templated {
   /** Its answer's playable `url` streams and links, leaving out static cards the real title got too. */
   urls: number;
   links: number;
+  /** The first web page its answer links to; never shown, as it can carry the addon's config. */
+  link?: string;
 }
 
 /** What the worker learned about a target's streams beyond the answer itself. */
@@ -889,6 +891,8 @@ interface ProbeContext {
   streamTimedOut: boolean;
   /** Asked at most once per probe, of the first target that needs it. */
   negativeControl(f: StreamFetch): Promise<Templated | undefined>;
+  /** The page the negative control's answer links to, opened at most once per probe. */
+  negativeLinkPage(t: Templated): Promise<LinkPage | undefined>;
 }
 
 /** Fetch each key once, sharing the pending answer with every later caller. */
@@ -1000,8 +1004,9 @@ async function askNegativeControl(
     });
     const urls = real.filter((s) => typeof (s as { url?: unknown }).url === "string").length;
     const links = real.length - urls;
+    const link = (real.find(isWebLink) as { externalUrl?: string } | undefined)?.externalUrl;
     ctx.log.debug({ step: "negative-control", id, status, urls, links }, "negative control");
-    return real.length > 0 ? { id, urls, links } : undefined;
+    return real.length > 0 ? { id, urls, links, ...(link ? { link } : {}) } : undefined;
   } catch (e) {
     ctx.log.debug({ step: "negative-control", id, err: errMsg(e) }, "negative control failed");
     return undefined;
@@ -1034,8 +1039,12 @@ async function verifyStreams(
       ? raw.find((s, i) => f.streams[i]?.kind === "link" && isWebLink(s))
       : undefined;
   const linkUrl = (link as { externalUrl?: string } | undefined)?.externalUrl;
-  const linkPage =
-    linkUrl && !isProtectedUrl(linkUrl, ctx.base) ? await followLink(linkUrl) : undefined;
+  // A page the addon caches for a popular title can be real while any other title's says "API key required".
+  const pages = await Promise.all([
+    linkUrl && !isProtectedUrl(linkUrl, ctx.base) ? followLink(linkUrl) : undefined,
+    link && templated ? ctx.negativeLinkPage(templated) : undefined,
+  ]);
+  const linkPage = strongestPage(pages);
   ctx.log.debug(
     {
       step: "verify",
@@ -1051,6 +1060,14 @@ async function verifyStreams(
     ...(templated ? { templated } : {}),
     ...(linkPage ? { linkPage } : {}),
   };
+}
+
+/** The page whose notice about the addon says the most, else the target's own. */
+function strongestPage(pages: ReadonlyArray<LinkPage | undefined>): LinkPage | undefined {
+  const notices = pages.flatMap((p) =>
+    p?.placeholder && p.placeholder !== "no-content" ? [{ ...p, placeholder: p.placeholder }] : [],
+  );
+  return strongestPlaceholder(notices) ?? pages.find((p) => p !== undefined);
 }
 
 function isWebLink(s: unknown): boolean {
@@ -1486,6 +1503,7 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
     const otherStreamTypes = streamRes.types.filter((t) => !isTargetedStreamProbeType(t));
     let borrowed: Promise<TestContent[]> | undefined;
     let negative: Promise<Templated | undefined> | undefined;
+    let negativePage: Promise<LinkPage | undefined> | undefined;
     const ctx: ProbeContext = {
       uuid: addon.uuid,
       base,
@@ -1505,6 +1523,11 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
       unanswered: 0,
       streamTimedOut: false,
       negativeControl: (f) => (negative ??= askNegativeControl(ctx, f)),
+      negativeLinkPage: (t) =>
+        (negativePage ??=
+          t.link && !isProtectedUrl(t.link, base)
+            ? followLink(t.link)
+            : Promise.resolve(undefined)),
     };
 
     const declares = (type: string) => plans.some((plan) => sameType(plan.catalog.type, type));
