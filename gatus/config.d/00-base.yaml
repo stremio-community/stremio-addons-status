@@ -34,7 +34,7 @@ alerting:
     # Mark the DOWN message as recovered instead of posting a new one, so the channel only gets messages when something breaks.
     edit-on-resolved: true
     # Labels of the worker's detail rows (probe.ts) to show under a failed condition.
-    detail-labels: ["Reason", "Test ID", "Attempt"]
+    detail-labels: ["Reason", "Test ID", "Attempt", "Redirect"]
 
 endpoints:
   - name: stremio-addons.net
