@@ -62,7 +62,7 @@ const PLACEHOLDER_PATTERNS: ReadonlyArray<readonly [PlaceholderKind, RegExp]> = 
     "needs-config",
     new RegExp(
       [
-        String.raw`\b(re-?)?configur`,
+        String.raw`\b(re-?)?configur(?!ed\b|ad[oa]s?\b)`,
         String.raw`\bkonfigur`,
         String.raw`\bsign[ -]?in\b`,
         String.raw`\blog[ -]?in\b`,
@@ -239,6 +239,7 @@ function isTrailer(s: Record<string, unknown>): boolean {
 /**
  * Classify one stream as a Stremio client would experience it.
  * `baseUrl` is the addon's own base URL, so a stream sending the user to the addon's configure page reads as a placeholder.
+ * Its wording comes first: an update nag also links to the configure page, to reinstall.
  */
 export function classifyStream(s: unknown, { baseUrl }: { baseUrl: string }): StreamClass {
   if (!s || typeof s !== "object") return { kind: "invalid", fingerprint: "", label: "" };
@@ -263,11 +264,10 @@ export function classifyStream(s: unknown, { baseUrl }: { baseUrl: string }): St
   }
 
   const links = [obj.url, obj.externalUrl].filter((v): v is string => typeof v === "string");
-  if (links.some((l) => pointsAtConfigurePage(l, baseUrl))) {
-    return { kind: "placeholder", placeholder: "needs-config", fingerprint, label };
-  }
   const placeholder =
-    placeholderKind(text) ?? (link ? placeholderKind(String(obj.externalUrl)) : undefined);
+    placeholderKind(text) ??
+    (link ? placeholderKind(String(obj.externalUrl)) : undefined) ??
+    (links.some((l) => pointsAtConfigurePage(l, baseUrl)) ? "needs-config" : undefined);
   if (placeholder) return { kind: "placeholder", placeholder, fingerprint, label };
 
   if (playable && !isTrailer(obj)) return { kind: "playable", fingerprint, label };

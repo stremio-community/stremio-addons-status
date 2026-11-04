@@ -176,6 +176,28 @@ describe("classifyStream", () => {
     expect(classify(stream).kind).not.toBe("placeholder");
   });
 
+  it("reads an update nag linking to the configure page as noise, not as a plea to configure", () => {
+    const c = classify({
+      name: "Made By",
+      title: "Made By v1.1.0 available. Tap to update your install.",
+      externalUrl: `${BASE}/configure`,
+    });
+    expect(c).toMatchObject({ kind: "placeholder", placeholder: "no-content" });
+  });
+
+  it("keeps a stream that says its headers are configured", () => {
+    const c = classify({
+      name: "Zeus ⚡",
+      title:
+        "Fonte: Anime 01 ✅ Episódio direto da fonte ⚙️ HLS com headers configurados • temporário",
+      url: "https://cdn.test/ep1.m3u8",
+    });
+    expect(c.kind).toBe("playable");
+    expect(
+      classify({ url: "https://cdn.test/a.mp4", title: "Proxy configured · 1080p" }).kind,
+    ).toBe("playable");
+  });
+
   it("labels a placeholder by its visible text", () => {
     const c = classify({
       name: "Jackettio",
