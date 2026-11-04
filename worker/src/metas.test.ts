@@ -62,8 +62,22 @@ describe("metaFlaws", () => {
     };
     expect(metaFlaws(meta, "movie", "tmdb:1273221")).toEqual([
       { summary: "id mismatch", reason: "meta id tmdb:1273221.json for request tmdb:1273221" },
-      { summary: "placeholder", reason: "addon says: Loading..." },
     ]);
+  });
+
+  it("flags a meta that drops the requested ID's prefix (Raccoonmendations)", () => {
+    expect(
+      metaFlaws({ id: "155", type: "movie", name: "The Dark Knight" }, "movie", "tmdb:155"),
+    ).toEqual([{ summary: "id mismatch", reason: "meta id 155 for request tmdb:155" }]);
+  });
+
+  it("accepts a meta mapped to another ID space (Watchario, TVDB Search)", () => {
+    expect(
+      metaFlaws({ id: "kitsu:13911", type: "movie", name: "A" }, "movie", "anilist:100248"),
+    ).toEqual([]);
+    expect(
+      metaFlaws({ id: "tt0096895", type: "movie", name: "Batman" }, "movie", "tvdb-1204"),
+    ).toEqual([]);
   });
 
   it("flags a series meta without videos", () => {

@@ -5,6 +5,9 @@ import { plural } from "./utils.js";
 /** Catalogs checked per addon besides those its primary check already fetched: enough to reach every type a typical addon declares. */
 export const MAX_COVERAGE_FETCHES = 4;
 
+/** Broken catalogs named in the summary, counting the `N more` that stands for the rest, since the tooltip and Discord show it; the detail rows list them all. */
+const MAX_NAMED_PROBLEMS = 4;
+
 export interface CatalogRef {
   type: string;
   id: string;
@@ -106,10 +109,17 @@ export function catalogCoverage(
     return problem ? [`${labelOf(o)} ${problem}`] : [];
   });
   const ok = catalogs.length - problems.length;
+  const named =
+    problems.length > MAX_NAMED_PROBLEMS
+      ? [
+          ...problems.slice(0, MAX_NAMED_PROBLEMS - 1),
+          `${problems.length - MAX_NAMED_PROBLEMS + 1} more`,
+        ]
+      : problems;
   return {
     resource: "catalogs",
     ok: problems.length === 0,
-    summary: `${ok} of ${catalogs.length} OK${problems.length > 0 ? ` · ${problems.join(", ")}` : ""}`,
+    summary: `${ok} of ${catalogs.length} OK${named.length > 0 ? ` · ${named.join(", ")}` : ""}`,
     details: catalogs.map(rowOf),
   };
 }

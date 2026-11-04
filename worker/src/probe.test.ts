@@ -988,13 +988,11 @@ describe("probe detail rows", () => {
     const r = await probe(m);
     expect(r.success).toBe(true);
     const meta = r.detail.perResource.find((p) => p.resource === "meta");
-    expect(meta).toMatchObject({ ok: false, summary: "id mismatch, placeholder" });
-    expect(meta?.details).toEqual(
-      expect.arrayContaining([
-        { label: "Reason", value: "meta id tmdb:1273221.json for request tmdb:1273221" },
-        { label: "Reason", value: "addon says: Loading..." },
-      ]),
-    );
+    expect(meta).toMatchObject({ ok: false, summary: "id mismatch" });
+    expect(meta?.details).toContainEqual({
+      label: "Reason",
+      value: "meta id tmdb:1273221.json for request tmdb:1273221",
+    });
   });
 
   it("keeps a meta-primary addon UP when its meta is only flawed, naming the flaw", async () => {

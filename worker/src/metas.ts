@@ -1,4 +1,3 @@
-import { placeholderMeta } from "./streams.js";
 import { plural } from "./utils.js";
 
 const META_REQUIRED_FIELDS = ["id", "type", "name"] as const;
@@ -55,16 +54,22 @@ export function metaBodyDefect(data: unknown): MetaDefect | undefined {
 }
 
 /**
- * Problems a meta Stremio can show still has: one for another title, a stand-in for the title, or a series with no episodes to pick.
+ * Whether the meta names itself with a garbled form of the requested ID (`tmdb:1273221.json`, `155` for `tmdb:155`), which Stremio then keeps and requests streams with.
+ * An ID from another space (`kitsu:13911` for `anilist:100248`) is a deliberate mapping that hands the title to other addons, so it doesn't count.
+ */
+function garbledId(metaId: string, id: string): boolean {
+  return metaId !== id && (metaId.includes(id) || id.includes(metaId));
+}
+
+/**
+ * Problems a meta Stremio can show still has: one that garbles the requested ID, or a series with no episodes to pick.
  * `id` is the ID the meta was requested with.
  */
 export function metaFlaws(meta: Record<string, unknown>, type: string, id: string): MetaDefect[] {
   const flaws: MetaDefect[] = [];
-  if (meta.id !== id) {
-    flaws.push({ summary: "id mismatch", reason: `meta id ${String(meta.id)} for request ${id}` });
+  if (typeof meta.id === "string" && garbledId(meta.id, id)) {
+    flaws.push({ summary: "id mismatch", reason: `meta id ${meta.id} for request ${id}` });
   }
-  const notice = placeholderMeta(meta);
-  if (notice) flaws.push({ summary: "placeholder", reason: `addon says: ${notice.label}` });
   if (type === "series" && !(Array.isArray(meta.videos) && meta.videos.length > 0)) {
     flaws.push({ summary: "no videos", reason: "series meta has no videos" });
   }

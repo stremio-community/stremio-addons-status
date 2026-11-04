@@ -114,6 +114,15 @@ describe("catalogCoverage", () => {
     expect(r?.summary).toBe("1 of 2 OK · series/top HTTP 500");
   });
 
+  it("names the first three broken catalogs and counts the rest (TV Legal France)", () => {
+    const r = catalogCoverage([
+      items("movie", "tvlegal-top", 20),
+      ...["films", "docs", "series", "jeunesse", "divertissements"].map((id) => empty("movie", id)),
+    ]);
+    expect(r?.summary).toBe("1 of 6 OK · films empty, docs empty, series empty, 2 more");
+    expect(r?.details).toHaveLength(6);
+  });
+
   it("says nothing about a single catalog, and passes when all are fine", () => {
     expect(catalogCoverage([items("movie", "a", 5)])).toBeUndefined();
     expect(catalogCoverage([items("movie", "a", 5), items("series", "b", 5)])).toMatchObject({
