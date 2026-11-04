@@ -31,6 +31,17 @@ describe("needsConfig pins", () => {
   });
 });
 
+describe("testIds", () => {
+  it.each([
+    ["40th PROJECT", "74cfec2c-fc0c-4d24-89cd-b60985a9d99c"],
+    ["SelectaVision", "8e0cc578-49c1-4f20-9770-439143a716b8"],
+  ])("names Dragon Ball for %s by the IMDb ID whose Cinemeta episodes start at S1E1", (_, uuid) => {
+    const ids = overrideFor(uuid)?.testIds?.map((t) => t.id);
+    expect(ids).toContain("tt0280249");
+    expect(ids).not.toContain("tt0088509");
+  });
+});
+
 describe("probeBaseUrl", () => {
   it("appends an addon's test config to its base URL", () => {
     expect(

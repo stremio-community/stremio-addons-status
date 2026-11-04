@@ -99,8 +99,9 @@ export const OVERRIDES: Readonly<Record<string, AddonOverride>> = {
   },
   "74cfec2c-fc0c-4d24-89cd-b60985a9d99c": {
     name: "40th PROJECT",
+    // Dragon Ball's other IMDb ID, tt0088509, has only season-0 episodes on Cinemeta, so Stremio would request a special neither addon has.
     testIds: [
-      { type: "series", id: "tt0088509" },
+      { type: "series", id: "tt0280249" },
       { type: "series", id: "tt0121220" },
     ],
   },
@@ -108,7 +109,7 @@ export const OVERRIDES: Readonly<Record<string, AddonOverride>> = {
     name: "SelectaVision",
     testIds: [
       { type: "series", id: "tt0121220" },
-      { type: "series", id: "tt0088509" },
+      { type: "series", id: "tt0280249" },
     ],
   },
   "6eec9b00-3cbd-46b1-a4b7-31d8005e4f58": {

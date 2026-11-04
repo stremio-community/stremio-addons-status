@@ -1933,19 +1933,19 @@ describe("probe needs-configuration", () => {
     overrides[m.uuid] = {
       name: "40th PROJECT",
       testIds: [
-        { type: "series", id: "tt0088509" },
+        { type: "series", id: "tt0280249" },
         { type: "series", id: "tt0121220" },
       ],
     };
     router = routes([
       ["/manifest.json", manifestOk(m.manifest)],
-      ["/stream/series/tt0088509:1:1.json", { status: 200, data: { streams: [EPISODE] } }],
+      ["/stream/series/tt0280249:1:1.json", { status: 200, data: { streams: [EPISODE] } }],
     ]);
     const r = await probe(m);
     expect(r.success).toBe(true);
     expect(r.detail.mode).toBe("content");
     const stream = r.detail.perResource.find((p) => p.resource === "stream");
-    expect(stream?.details).toContainEqual({ label: "Test ID", value: "tt0088509:1:1 (curated)" });
+    expect(stream?.details).toContainEqual({ label: "Test ID", value: "tt0280249:1:1 (curated)" });
   });
 
   it("content-checks a configurationRequired addon under its public test config, which no row shows (Anime Catalogs)", async () => {
