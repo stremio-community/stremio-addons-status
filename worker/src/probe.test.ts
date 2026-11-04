@@ -1678,6 +1678,86 @@ describe("probe catalog notices", () => {
   });
 });
 
+describe("probe catalog addons whose streams are empty for their own titles", () => {
+  afterEach(() => {
+    for (const uuid of Object.keys(overrides)) delete overrides[uuid];
+  });
+
+  const ttCatalogAddon = (manifest: Partial<Manifest> = {}, categories = ["movies"]) => {
+    const m = addon({
+      types: ["movie"],
+      resources: ["catalog", "stream"],
+      idPrefixes: ["tt"],
+      catalogs: [{ type: "movie", id: "top", name: "Top" }],
+      ...manifest,
+    });
+    m.categories = categories;
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/catalog/movie/top.json",
+        { status: 200, data: { metas: [{ id: "tt1", type: "movie", name: "Real" }] } },
+      ],
+      ["/stream/movie/tt1.json", { status: 200, data: { streams: [] } }],
+    ]);
+    return m;
+  };
+
+  it("is DOWN when nothing says its streams are optional", async () => {
+    const r = await probe(ttCatalogAddon({ description: "Movies with direct links" }));
+    expect(r.success).toBe(false);
+    expect(r.detail.primary).toBe("stream");
+  });
+
+  it("judges it on its catalogs when it is configurable", async () => {
+    const r = await probe(ttCatalogAddon({ behaviorHints: { configurable: true } }));
+    expect(r.success).toBe(true);
+    expect(r.detail.primary).toBe("catalog");
+  });
+
+  it("judges it on its catalogs when its description calls it a catalog add-on (Indian Regional Catalog)", async () => {
+    const r = await probe(
+      ttCatalogAddon({
+        description:
+          "🇮🇳 Indian Regional Movies & Series Catalog Add-on. Available Catalogs: Telugu",
+      }),
+    );
+    expect(r.success).toBe(true);
+    expect(r.detail.primary).toBe("catalog");
+  });
+
+  it("judges it on its catalogs when its listing files it under metadata only (Pinoy Movies)", async () => {
+    const r = await probe(
+      ttCatalogAddon({ description: "Philippines R-18 movies from TMDB." }, [
+        "movies",
+        "metadata",
+        "nsfw",
+      ]),
+    );
+    expect(r.success).toBe(true);
+    expect(r.detail.primary).toBe("catalog");
+  });
+
+  it("stays DOWN when its listing files it under metadata and a stream source", async () => {
+    const r = await probe(ttCatalogAddon({}, ["metadata", "movies", "http streams"]));
+    expect(r.success).toBe(false);
+    expect(r.detail.primary).toBe("stream");
+  });
+
+  it("judges it on its catalogs when its override says its streams are optional, and says why", async () => {
+    const m = ttCatalogAddon();
+    overrides[m.uuid] = { name: "Stub", streamsOptional: "its homepage says no media is hosted" };
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(r.detail.primary).toBe("catalog");
+    expect(r.detail.perResource.find((p) => p.resource === "stream")?.details).toContainEqual({
+      label: "Note",
+      value:
+        "no streams for the addon's own catalog titles (its homepage says no media is hosted); judged on its catalogs",
+    });
+  });
+});
+
 describe("probe needs-configuration", () => {
   afterEach(() => {
     for (const uuid of Object.keys(overrides)) delete overrides[uuid];

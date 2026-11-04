@@ -15,7 +15,8 @@ describe("OVERRIDES", () => {
           o.needsConfig ??
           o.testIds ??
           o.sameStreamsForEveryTitle ??
-          o.translatesSubtitles,
+          o.translatesSubtitles ??
+          o.streamsOptional,
         uuid,
       ).toBeDefined();
       for (const t of o.testIds ?? []) expect(t.id, uuid).not.toBe("");
