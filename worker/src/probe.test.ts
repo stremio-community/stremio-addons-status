@@ -2223,7 +2223,9 @@ describe("probe own catalogs as the ID source", () => {
     ]);
     const down = await probe(m);
     expect(down.success).toBe(false);
-    expect(down.message).toBe("manifest up · catalog: movie empty (3 tries)");
+    expect(down.message).toBe(
+      "manifest up · catalog: movie empty (3 tries) · catalogs: 0 of 4 OK · a empty, b empty, c empty, d empty",
+    );
 
     router = routes([
       ["/manifest.json", manifestOk(m.manifest)],
@@ -2649,6 +2651,106 @@ describe("probe several titles per type", () => {
   });
 });
 
+describe("probe catalog coverage", () => {
+  it("checks the series catalog a catalog addon's movie catalog passed without (Cartoon Network)", async () => {
+    const m = addon({
+      types: ["movie", "series"],
+      idPrefixes: ["tmdb"],
+      resources: ["catalog"],
+      catalogs: [
+        { type: "movie", id: "cartoon_network_movie", name: "Cartoon Network" },
+        { type: "series", id: "cartoon_network_series", name: "Cartoon Network" },
+      ],
+    });
+    const series = Array.from({ length: 20 }, (_, i) => ({
+      id: `tmdb:${15260 + i}`,
+      type: "series",
+      poster: "https://image.tmdb.org/t/p/w500/x.jpg",
+    }));
+    let movieRequests = 0;
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/catalog/movie/cartoon_network_movie.json",
+        () => {
+          movieRequests++;
+          return {
+            status: 200,
+            data: {
+              metas: [{ id: "tmdb:16000", type: "movie", name: "Ben 10: Race Against Time" }],
+            },
+          } as never;
+        },
+      ],
+      ["/catalog/series/cartoon_network_series.json", { status: 200, data: { metas: series } }],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(r.detail.perResource.map((p) => p.resource)).toEqual(["catalog", "catalogs"]);
+    expect(r.detail.perResource[1]).toMatchObject({
+      ok: false,
+      summary: "1 of 2 OK · cartoon_network_series without name",
+    });
+    expect(movieRequests).toBe(1);
+  });
+
+  it("names a stream addon's broken sibling catalogs without changing its verdict (OnlyPorn)", async () => {
+    const ids = ["eporner", "spankbang", "missav", "xhamster.hd+", "xhamster.4k"];
+    const m = addon({
+      types: ["movie"],
+      resources: ["catalog", "stream"],
+      catalogs: ids.map((id) => ({ type: "movie", id, name: id })),
+    });
+    const titled = (n: number) =>
+      Array.from({ length: n }, (_, i) => ({ id: `ep:${i}`, type: "movie", name: `T${i}` }));
+    const nameless = Array.from({ length: 39 }, (_, i) => ({ id: `xh:${i}`, type: "movie" }));
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      ["/catalog/movie/eporner.json", { status: 200, data: { metas: titled(65) } }],
+      ["/catalog/movie/spankbang.json", { status: 200, data: { metas: [] } }],
+      ["/catalog/movie/missav.json", { status: 200, data: { metas: [] } }],
+      [
+        "/catalog/movie/xhamster.hd%2B.json",
+        { status: 200, data: { metas: [...titled(12), ...nameless] } },
+      ],
+      ["/stream/movie/ep:0.json", { status: 200, data: { streams: [PLAYABLE] } }],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(r.detail.primary).toBe("stream");
+    expect(r.detail.perResource.find((p) => p.resource === "catalogs")).toMatchObject({
+      ok: false,
+      summary: "1 of 4 OK · spankbang empty, missav empty, xhamster.hd+ without name",
+    });
+  });
+
+  it("leaves search-only catalogs out", async () => {
+    const m = addon({
+      types: ["movie"],
+      resources: ["catalog"],
+      catalogs: [
+        { type: "movie", id: "top", name: "Top" },
+        {
+          type: "movie",
+          id: "search",
+          name: "Search",
+          extra: [{ name: "search", isRequired: true }],
+        },
+      ],
+    });
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/catalog/movie/top.json",
+        { status: 200, data: { metas: [{ id: "x:1", type: "movie", name: "X" }] } },
+      ],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(r.detail.perResource.map((p) => p.resource)).toEqual(["catalog"]);
+  });
+});
+
 describe("probe catalog order and notices per title", () => {
   it("alternates catalog sources, so one failing backend doesn't use up every try (Latanime)", async () => {
     const m = addon({
@@ -2685,7 +2787,7 @@ describe("probe catalog order and notices per title", () => {
     };
     const r = await probe(m);
     expect(r.success).toBe(true);
-    expect(catalogRequests).toEqual([
+    expect(catalogRequests.slice(0, 2)).toEqual([
       "/catalog/series/latanime-latest.json",
       "/catalog/series/animeav1-directory.json",
     ]);

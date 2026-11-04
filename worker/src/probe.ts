@@ -17,6 +17,7 @@ import {
 } from "./http.js";
 import { encodeId, errMsg, plural } from "./utils.js";
 import { corsAnnotation, STREMIO_WEB_HEADERS } from "./cors.js";
+import { catalogCoverage, coveragePicks } from "./catalogs.js";
 import {
   metaBodyDefect,
   metaDefects,
@@ -209,6 +210,8 @@ interface CatalogPlan {
   paths: string[];
   /** Catalogs needing no user input come first. */
   rank: number;
+  /** A search-only catalog, whose answer depends on the term as much as on the addon. */
+  search: boolean;
 }
 
 function extraPair(name: string, value: string): string {
@@ -248,6 +251,7 @@ function catalogPlan(catalog: ManifestCatalog): CatalogPlan | null {
     catalog,
     paths: variants.map((v) => `${base}${v.length > 0 ? `/${v.join("&")}` : ""}.json`),
     rank: required.size === 0 ? 0 : 1,
+    search: required.has("search"),
   };
 }
 
@@ -909,6 +913,32 @@ async function* catalogItems(
   }
 }
 
+/** Each catalog a user browses that the probe hasn't fetched yet, within the coverage budget, with every request made for it. */
+async function coverCatalogs(
+  fetch: CatalogFetcher,
+  plans: CatalogPlan[],
+  fetched: CatalogAttempt[],
+): Promise<CatalogAttempt[]> {
+  const browsable = plans.filter((p) => !p.search);
+  const keys = new Set(browsable.map((p) => `${p.catalog.type}/${p.catalog.id}`));
+  const covered = fetched.filter((a) => keys.has(`${a.catalog.type}/${a.catalog.id}`));
+  const picks = coveragePicks(
+    browsable,
+    (p) => p.catalog,
+    covered.map((a) => a.catalog),
+  );
+  const fresh = await mapLimit(picks, TYPES_IN_FLIGHT, async (plan) => {
+    const made: CatalogAttempt[] = [];
+    for (const path of plan.paths) {
+      const attempt = await fetch(plan, path);
+      made.push(attempt);
+      if (attempt.kind !== "empty") break;
+    }
+    return made;
+  });
+  return [...covered, ...fresh.flat()];
+}
+
 /** A check's row in the stream condition: its deciding request in full, and every other ID tried for the same type in one row each. */
 interface StreamRow {
   label: string;
@@ -1513,6 +1543,12 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
   }
 
   if (streamOutcome?.kind === "needs-config") return needsConfiguration(streamOutcome.reason);
+
+  const coverage = catalogCoverage(await coverCatalogs(catalogOnce, plans, attempts));
+  if (coverage) {
+    const after = perResource.findIndex((r) => r.resource === "catalog") + 1;
+    perResource.splice(after > 0 ? after : perResource.length, 0, coverage);
+  }
 
   // Step 5: Verdict from the primary resource.
   const primaryResult = perResource.find((r) => r.resource === primary);
