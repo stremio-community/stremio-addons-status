@@ -28,12 +28,18 @@ const res = (types: string[], idPrefixes: string[]): NormResource => ({
 });
 
 /** Real Anime Kitsu shapes: catalog metas are `series`/`movie`, videos map to IMDb seasons and episodes. */
-function kitsuMeta(id: string, imdb: string, type = "series") {
+function kitsuMeta(
+  id: string,
+  imdb: string,
+  type = "series",
+  names: { name?: string; aliases?: string[] } = {},
+) {
   return type === "movie"
     ? {
         meta: {
           id,
           type,
+          ...names,
           imdb_id: imdb,
           behaviorHints: { defaultVideoId: id },
           videos: [{ id, season: 1, episode: 1, imdb_id: imdb, imdbSeason: 1, imdbEpisode: 1 }],
@@ -43,6 +49,7 @@ function kitsuMeta(id: string, imdb: string, type = "series") {
         meta: {
           id,
           type,
+          ...names,
           imdb_id: imdb,
           videos: [1, 2].map((e) => ({
             id: `${id}:${e}`,
@@ -60,7 +67,13 @@ function seedSources(): void {
   responses.set(`${CINEMETA}/catalog/movie/top.json`, {
     metas: [
       { id: "tt37287335", imdb_id: "tt37287335", type: "movie", releaseInfo: "2026" },
-      { id: "tt0107120", imdb_id: "tt0107120", type: "movie", releaseInfo: "1993" },
+      {
+        id: "tt0107120",
+        imdb_id: "tt0107120",
+        type: "movie",
+        name: "Hocus Pocus",
+        releaseInfo: "1993",
+      },
       { id: "tt32261958", type: "movie", releaseInfo: "2026" },
       { id: "tt0077651", type: "movie", releaseInfo: "1978" },
       { id: "tt0107688", type: "movie", releaseInfo: "1993" },
@@ -69,7 +82,7 @@ function seedSources(): void {
   responses.set(`${CINEMETA}/catalog/series/top.json`, {
     metas: [
       { id: "tt26598805", type: "series", releaseInfo: "2026–" },
-      { id: "tt33043892", type: "series", releaseInfo: "2025–" },
+      { id: "tt33043892", type: "series", name: "Dexter: Resurrection", releaseInfo: "2025–" },
       { id: "tt31510819", type: "series", releaseInfo: "2025–" },
     ],
   });
@@ -92,7 +105,13 @@ function seedSources(): void {
       { id: "kitsu:12", type: "series", imdb_id: "tt0388629", releaseInfo: "1999-" },
     ],
   });
-  responses.set(`${KITSU}/meta/series/kitsu:7442.json`, kitsuMeta("kitsu:7442", "tt2560140"));
+  responses.set(
+    `${KITSU}/meta/series/kitsu:7442.json`,
+    kitsuMeta("kitsu:7442", "tt2560140", "series", {
+      name: "Attack on Titan",
+      aliases: ["Attack on Titan", "Shingeki no Kyojin", "AoT"],
+    }),
+  );
   responses.set(`${KITSU}/meta/series/kitsu:1376.json`, kitsuMeta("kitsu:1376", "tt0877057"));
   responses.set(`${KITSU}/meta/series/kitsu:3936.json`, kitsuMeta("kitsu:3936", "tt1355642"));
   responses.set(`${KITSU}/meta/series/kitsu:10740.json`, kitsuMeta("kitsu:10740", "tt4508902"));
@@ -125,6 +144,21 @@ describe("candidatesFor", () => {
     ]);
     expect(cs[0].source).toBe("well-known");
     expect(cs[2].source).toBe("cinemeta");
+  });
+
+  it("names each borrowed title as its source knows it, with Kitsu's aliases", async () => {
+    const cs = await candidatesFor(res(["movie", "series"], ["tt"]));
+    const namesOf = (id: string) => cs.find((c) => c.id === id)?.names;
+    expect(namesOf("tt0111161")).toEqual(["The Shawshank Redemption"]);
+    expect(namesOf("tt0944947")).toEqual(["Game of Thrones"]);
+    expect(namesOf("tt0107120")).toEqual(["Hocus Pocus"]);
+    expect(namesOf("tt33043892")).toEqual(["Dexter: Resurrection"]);
+    expect(namesOf("tt0077651")).toBeUndefined();
+
+    const anime = await candidatesFor(res(["anime", "series"], ["kitsu", "tt"]));
+    const aot = ["Attack on Titan", "Shingeki no Kyojin", "AoT"];
+    expect(anime.find((c) => c.id === "kitsu:7442")?.names).toEqual(aot);
+    expect(anime.find((c) => c.id === "tt2560140")?.names).toEqual(aot);
   });
 
   it("never offers a current-year Cinemeta release", async () => {

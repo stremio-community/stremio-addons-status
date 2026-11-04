@@ -12,11 +12,14 @@ export interface TestContent {
   episodeId?: string;
   /** Where the id came from (an ID source's name, or `own catalog`), shown next to it on the status page. */
   source?: string;
+  /** The title's names as its ID source knows them, the main one first. */
+  names?: string[];
 }
 
 interface CatalogItem {
   id: string;
   type?: string;
+  name?: string;
   imdb_id?: string;
   releaseInfo?: string;
 }
@@ -26,6 +29,8 @@ interface CatalogResponse {
 
 /** Anime Kitsu maps each video to its IMDb counterpart. */
 interface KitsuMeta extends PlayableMeta {
+  name?: string;
+  aliases?: string[];
   imdb_id?: string;
   videos?: Array<{
     id: string;
@@ -48,15 +53,15 @@ const KITSU = "https://anime-kitsu.strem.fun";
  * Each type's list is rotated per cycle, so no single title is load-bearing either.
  */
 const WELL_KNOWN: TestContent[] = [
-  { type: "movie", id: "tt0111161" }, // The Shawshank Redemption
-  { type: "movie", id: "tt1375666" }, // Inception
-  { type: "movie", id: "tt0468569" }, // The Dark Knight
-  { type: "movie", id: "tt15398776" }, // Oppenheimer
-  { type: "movie", id: "tt0133093" }, // The Matrix
-  { type: "series", id: "tt0944947", episodeId: "tt0944947:1:1" }, // Game of Thrones
-  { type: "series", id: "tt0903747", episodeId: "tt0903747:1:1" }, // Breaking Bad
-  { type: "series", id: "tt4574334", episodeId: "tt4574334:1:1" }, // Stranger Things
-  { type: "series", id: "tt0108778", episodeId: "tt0108778:1:1" }, // Friends
+  { type: "movie", id: "tt0111161", names: ["The Shawshank Redemption"] },
+  { type: "movie", id: "tt1375666", names: ["Inception"] },
+  { type: "movie", id: "tt0468569", names: ["The Dark Knight"] },
+  { type: "movie", id: "tt15398776", names: ["Oppenheimer"] },
+  { type: "movie", id: "tt0133093", names: ["The Matrix"] },
+  { type: "series", id: "tt0944947", episodeId: "tt0944947:1:1", names: ["Game of Thrones"] },
+  { type: "series", id: "tt0903747", episodeId: "tt0903747:1:1", names: ["Breaking Bad"] },
+  { type: "series", id: "tt4574334", episodeId: "tt4574334:1:1", names: ["Stranger Things"] },
+  { type: "series", id: "tt0108778", episodeId: "tt0108778:1:1", names: ["Friends"] },
 ];
 
 /** Long-finished anime with broad fansub and dub coverage, rotated like WELL_KNOWN. */
@@ -157,6 +162,13 @@ async function topItems(base: string, catalogPath: string): Promise<CatalogItem[
     .slice(0, TOP_PICKS);
 }
 
+function namesOf(...names: Array<string | undefined>): { names?: string[] } {
+  const known = [
+    ...new Set(names.filter((n): n is string => typeof n === "string" && n.trim() !== "")),
+  ];
+  return known.length > 0 ? { names: known } : {};
+}
+
 function cinemetaStreamId(id: string): Promise<string | undefined> {
   return cached(`cinemeta-meta:${id}`, async () => {
     const data = await fetchData<MetaResponse<PlayableMeta>>(
@@ -178,11 +190,11 @@ function cinemetaTop(): Promise<TestContent[]> {
       series.map(async (m): Promise<TestContent | undefined> => {
         const id = m.imdb_id || m.id;
         const episodeId = await cinemetaStreamId(id);
-        return episodeId ? { type: "series", id, episodeId } : undefined;
+        return episodeId ? { type: "series", id, episodeId, ...namesOf(m.name) } : undefined;
       }),
     );
     return [
-      ...movies.map((m) => ({ type: "movie", id: m.imdb_id || m.id })),
+      ...movies.map((m) => ({ type: "movie", id: m.imdb_id || m.id, ...namesOf(m.name) })),
       ...episodes.filter((c) => c !== undefined),
     ];
   });
@@ -202,13 +214,18 @@ async function kitsuTitle(type: string, id: string): Promise<AnimeTitle | undefi
   if (!meta) return undefined;
   const metaType = meta.type ?? type;
   const streamId = streamIdForMeta({ ...meta, id });
+  const names = namesOf(meta.name, ...(Array.isArray(meta.aliases) ? meta.aliases : []));
   const kitsu: TestContent = {
     type: metaType,
     id,
     ...(streamId !== id ? { episodeId: streamId } : {}),
+    ...names,
   };
   if (metaType === "movie") {
-    return { kitsu, imdb: meta.imdb_id ? { type: metaType, id: meta.imdb_id } : undefined };
+    return {
+      kitsu,
+      imdb: meta.imdb_id ? { type: metaType, id: meta.imdb_id, ...names } : undefined,
+    };
   }
   const video = meta.videos?.find((v) => v.id === streamId);
   const imdbId = video?.imdb_id ?? meta.imdb_id;
@@ -218,6 +235,7 @@ async function kitsuTitle(type: string, id: string): Promise<AnimeTitle | undefi
           type: metaType,
           id: imdbId,
           episodeId: `${imdbId}:${video.imdbSeason}:${video.imdbEpisode}`,
+          ...names,
         }
       : undefined;
   return { kitsu, imdb };

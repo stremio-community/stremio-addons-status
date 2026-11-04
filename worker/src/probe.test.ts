@@ -4289,3 +4289,93 @@ describe("probe subtitles-only addons", () => {
     expect(r.detail.skipReason).toBe("no test ID for subtitles");
   });
 });
+
+describe("probe wrong title", () => {
+  const ULT_FRIENDS = [
+    "I Made Friends with the Second Prettiest Girl in My Class S01E01 1080p CR WEB-DL AAC2.0 H 264-VARYG",
+    "[Judas] Class de 2-banme ni Kawaii Onnanoko to Tomodachi ni Natta (I Made Friends with the Second Prettiest Girl in My Class) - S01E01 [1080p]",
+  ].map((title, i) => ({
+    name: "ULT AddOn [FHD]\n📅 22.09.1994.",
+    title: `${title}\n💾 Unknown | 👥 S: 54 | [Nyaa]`,
+    infoHash: String(i + 1).repeat(40),
+  }));
+
+  function ultAddon() {
+    const m = addon({
+      types: ["series"],
+      resources: [{ name: "stream", types: ["series"], idPrefixes: ["tt"] }],
+    });
+    idsourcesMock.hasSourceFor = () => true;
+    idsourcesMock.candidatesFor = async () => [
+      { type: "series", id: "tt0108778", episodeId: "tt0108778:1:1", names: ["Friends"] },
+      { type: "series", id: "tt0903747", episodeId: "tt0903747:1:1", names: ["Breaking Bad"] },
+    ];
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      ["/stream/series/tt0108778:1:1.json", { status: 200, data: { streams: ULT_FRIENDS } }],
+      ["/stream/series/tt0903747:1:1.json", { status: 200, data: { streams: [] } }],
+    ]);
+    return m;
+  }
+
+  it("isn't UP on streams naming another title than the borrowed one asked for (ULT AddOn)", async () => {
+    const r = await probe(ultAddon());
+    expect(r.success).toBe(false);
+    expect(r.detail.streamCounts).toEqual({ total: 2, playable: 0, links: 0 });
+    const stream = r.detail.perResource.find((p) => p.resource === "stream");
+    expect(stream?.summary).toBe("series 2 streams, wrong title (2 IDs)");
+    expect(stream?.details).toContainEqual({
+      label: "Reason",
+      value: "streams for another title: I Made Friends with the Second Prettiest Girl in My Class",
+    });
+  });
+
+  it("notes streams for another title beside ones without a release name, which still count", async () => {
+    const m = ultAddon();
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/stream/series/tt0108778:1:1.json",
+        { status: 200, data: { streams: [...ULT_FRIENDS, PLAYABLE] } },
+      ],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(r.detail.streamCounts).toEqual({ total: 3, playable: 1, links: 0 });
+    const stream = r.detail.perResource.find((p) => p.resource === "stream");
+    expect(stream?.details).toContainEqual({
+      label: "Note",
+      value:
+        "wrong title: 2 of 3 streams name I Made Friends with the Second Prettiest Girl in My Class",
+    });
+  });
+
+  it("keeps an own catalog title's streams whatever they name", async () => {
+    const m = ultAddon();
+    idsourcesMock.candidatesFor = async () => [
+      { type: "series", id: "tt0108778", episodeId: "tt0108778:1:1", names: ["Friends"] },
+    ];
+    m.manifest.catalogs = [{ type: "series", id: "top", name: "Top" }];
+    m.manifest.resources = [
+      ...m.manifest.resources,
+      { name: "catalog", types: ["series"], idPrefixes: ["tt"] },
+    ];
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/catalog/series/top.json",
+        {
+          status: 200,
+          data: {
+            metas: [
+              { id: "tt0108778", type: "series", name: "Friends", poster: "https://p.test/x.jpg" },
+            ],
+          },
+        },
+      ],
+      ["/stream/series/tt0108778:1:1.json", { status: 200, data: { streams: ULT_FRIENDS } }],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+  });
+});
