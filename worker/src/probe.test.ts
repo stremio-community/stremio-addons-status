@@ -954,7 +954,7 @@ describe("probe detail rows", () => {
         "/catalog/movie/top.json",
         { status: 200, data: { metas: [{ id: "m1", type: "movie", name: "M" }] } },
       ],
-      ["/meta/movie/m1.json", { status: 200, data: { meta: { id: "m1", type: "movie" } } }],
+      ["/meta/movie/m1.json", { status: 200, data: { meta: { id: "m1", name: "M" } } }],
     ]);
     const r = await probe(m);
     const meta = r.detail.perResource.find((p) => p.resource === "meta");
@@ -963,7 +963,7 @@ describe("probe detail rows", () => {
       { label: "Request", value: "/meta/movie/m1.json" },
       { label: "Test ID", value: "m1 (own catalog)" },
       { label: "Attempt", value: "direct · HTTP 200 · 1ms" },
-      { label: "Reason", value: "meta missing name" },
+      { label: "Reason", value: "meta missing type" },
     ]);
   });
 
@@ -1073,11 +1073,11 @@ describe("probe detail rows", () => {
     expect(catalog?.summary).toBe("invalid (1 meta without type, name)");
     expect(catalog?.details.at(-1)).toEqual({
       label: "Reason",
-      value: "none of 1 metas has an id, type and name",
+      value: "none of 1 metas has an id and type",
     });
   });
 
-  it("calls a catalog of metas without names invalid, not empty (TorrentFreaks Top-10)", async () => {
+  it("passes a catalog of metas without names and names the gap (TorrentFreaks Top-10)", async () => {
     const m = addon({
       types: ["movie"],
       resources: ["catalog"],
@@ -1089,9 +1089,9 @@ describe("probe detail rows", () => {
       ["/catalog/movie/torrentfreak-movies.json", { status: 200, data: { metas } }],
     ]);
     const r = await probe(m);
-    expect(r.success).toBe(false);
+    expect(r.success).toBe(true);
     expect(r.detail.perResource.find((p) => p.resource === "catalog")?.summary).toBe(
-      "invalid (100 metas without name)",
+      "100 metas without name",
     );
   });
 });
@@ -3380,7 +3380,8 @@ describe("probe transport", () => {
         ],
       }),
     ).toBe(false);
-    expect(usable?.({ metas: [{ id: "x1", type: "movie" }] })).toBe(false);
+    expect(usable?.({ metas: [{ id: "x1", type: "movie" }] })).toBe(true);
+    expect(usable?.({ metas: [{ id: "x1", name: "One" }] })).toBe(false);
   });
 
   it("retries only the requests that decide the verdict", async () => {

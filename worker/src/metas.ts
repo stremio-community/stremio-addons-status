@@ -1,26 +1,45 @@
 import { plural } from "./utils.js";
 
-const META_REQUIRED_FIELDS = ["id", "type", "name"] as const;
+/** The fields Stremio needs to load a meta or meta preview; it shows one without `name` as an untitled tile. */
+const META_REQUIRED_FIELDS = ["id", "type"] as const;
+const META_DOCUMENTED_FIELDS = [...META_REQUIRED_FIELDS, "name"] as const;
+
+function lackedFields(m: unknown, fields: readonly string[]): string[] {
+  const o = m as Record<string, unknown> | undefined;
+  return fields.filter((f) => typeof o?.[f] !== "string");
+}
 
 /** The fields Stremio needs on a meta or meta preview that this one lacks or holds as a non-string. */
 export function missingMetaFields(m: unknown): string[] {
-  const o = m as Record<string, unknown> | undefined;
-  return META_REQUIRED_FIELDS.filter((f) => typeof o?.[f] !== "string");
+  return lackedFields(m, META_REQUIRED_FIELDS);
 }
 
-/** How many of a catalog's metas lack a required field, and which fields they lack between them. */
-export function metaDefects(metas: readonly unknown[]): { invalid: number; missing: string[] } {
-  const missing = metas.map(missingMetaFields).filter((fields) => fields.length > 0);
+/** A catalog's metas, how many lack a field the SDK docs require, and which fields they lack between them. */
+export interface MetaCounts {
+  total: number;
+  incomplete: number;
+  missing: string[];
+}
+
+export function metaDefects(metas: readonly unknown[]): MetaCounts {
+  const missing = metas
+    .map((m) => lackedFields(m, META_DOCUMENTED_FIELDS))
+    .filter((fields) => fields.length > 0);
   return {
-    invalid: missing.length,
-    missing: META_REQUIRED_FIELDS.filter((f) => missing.some((fields) => fields.includes(f))),
+    total: metas.length,
+    incomplete: missing.length,
+    missing: META_DOCUMENTED_FIELDS.filter((f) => missing.some((fields) => fields.includes(f))),
   };
 }
 
 /** `39 of 51 metas without name`, or `100 metas without name` when none has it. */
-export function metasWithout(invalid: number, total: number, missing: readonly string[]): string {
+export function metasWithout(
+  incomplete: number,
+  total: number,
+  missing: readonly string[],
+): string {
   const count =
-    invalid === total ? plural(total, "meta") : `${invalid} of ${plural(total, "meta")}`;
+    incomplete === total ? plural(total, "meta") : `${incomplete} of ${plural(total, "meta")}`;
   return `${count} without ${missing.join(", ")}`;
 }
 
@@ -39,7 +58,8 @@ export function metaBodyDefect(data: unknown): MetaDefect | undefined {
   const meta = isObject(data) ? data.meta : undefined;
   if (!isObject(meta)) {
     const unwrapped =
-      isObject(data) && missingMetaFields(data).length < META_REQUIRED_FIELDS.length;
+      isObject(data) &&
+      lackedFields(data, META_DOCUMENTED_FIELDS).length < META_DOCUMENTED_FIELDS.length;
     return unwrapped
       ? {
           summary: "invalid (meta not wrapped)",
@@ -62,11 +82,14 @@ function garbledId(metaId: string, id: string): boolean {
 }
 
 /**
- * Problems a meta Stremio can show still has: one that garbles the requested ID, or a series with no episodes to pick.
+ * Problems a meta Stremio can show still has: one without a name, one that garbles the requested ID, or a series with no episodes to pick.
  * `id` is the ID the meta was requested with.
  */
 export function metaFlaws(meta: Record<string, unknown>, type: string, id: string): MetaDefect[] {
   const flaws: MetaDefect[] = [];
+  if (typeof meta.name !== "string") {
+    flaws.push({ summary: "without name", reason: "meta has no name" });
+  }
   if (typeof meta.id === "string" && garbledId(meta.id, id)) {
     flaws.push({ summary: "id mismatch", reason: `meta id ${meta.id} for request ${id}` });
   }

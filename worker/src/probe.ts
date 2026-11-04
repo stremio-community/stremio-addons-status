@@ -29,6 +29,7 @@ import {
   metaDefects,
   metaFlaws,
   metasWithout,
+  type MetaCounts,
   missingMetaFields,
 } from "./metas.js";
 import { candidatesFor, hasSourceFor, type TestContent } from "./idsources.js";
@@ -179,8 +180,8 @@ interface CatalogAttempt {
   notice?: MetaNotice;
   /** Unset when the request threw. */
   answer?: ContentAnswer;
-  /** The metas a parsed 2xx answer listed, and those lacking a required field. */
-  metas?: { total: number; invalid: number; missing: string[] };
+  /** The metas a parsed 2xx answer listed. */
+  metas?: MetaCounts;
 }
 
 /** A catalog the worker can query, with the requests to try in order: each later one runs only when the previous came back empty. */
@@ -293,13 +294,14 @@ async function fetchCatalog(
     }
     const metas = Array.isArray(data?.metas) ? data.metas : [];
     const valid = metas.filter((m) => missingMetaFields(m).length === 0);
-    const { invalid, missing } = metaDefects(metas);
-    const counted = { ...answered, metas: { total: metas.length, invalid, missing } };
+    const counts = metaDefects(metas);
+    const { incomplete, missing } = counts;
+    const counted = { ...answered, metas: counts };
     if (valid.length === 0) {
       const reason =
         metas.length === 0
           ? "returned no metas"
-          : `none of ${metas.length} metas has an id, type and name`;
+          : `none of ${metas.length} metas has an id and type`;
       return {
         ...counted,
         kind: "empty",
@@ -307,7 +309,7 @@ async function fetchCatalog(
         summary:
           metas.length === 0
             ? "empty"
-            : `invalid (${metasWithout(invalid, metas.length, missing)})`,
+            : `invalid (${metasWithout(incomplete, metas.length, missing)})`,
         details: requestRows(path, attempts, { reason, note }),
       };
     }
@@ -328,7 +330,8 @@ async function fetchCatalog(
       ...counted,
       kind: "items",
       ok: true,
-      summary: `${metas.length} metas`,
+      summary:
+        incomplete > 0 ? metasWithout(incomplete, metas.length, missing) : `${metas.length} metas`,
       details: requestRows(path, attempts, { note }),
       items: real.map((m) => ({
         type: m.type || catalog.type,
