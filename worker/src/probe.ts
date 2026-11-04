@@ -526,15 +526,24 @@ function noticeReason(notice: Placeholder): string {
   return `addon says: ${notice.label}`;
 }
 
-/** Judge every answer, comparing them so a stream recurring for unrelated titles can't pass as content. */
-function judgeStreamFetches(fetches: StreamFetch[], configurable: boolean): StreamCheckResult[] {
+/**
+ * Judge every answer, comparing them so a stream recurring for unrelated titles can't pass as content.
+ * An addon pinned as answering the same streams for every title by design skips that comparison.
+ */
+function judgeStreamFetches(
+  fetches: StreamFetch[],
+  configurable: boolean,
+  sameForEveryTitle: boolean,
+): StreamCheckResult[] {
   const byTestId = new Map<string, StreamClass[]>();
   for (const f of fetches) {
     if (f.status !== undefined && isOkStatus(f.status) && !f.parseError && !byTestId.has(f.id)) {
       byTestId.set(f.id, f.streams);
     }
   }
-  const repeated = repeatedFingerprints([...byTestId.values()]);
+  const repeated = sameForEveryTitle
+    ? new Set<string>()
+    : repeatedFingerprints([...byTestId.values()]);
   return fetches.map((f) => judgeStreamFetch(f, repeated, configurable));
 }
 
@@ -644,6 +653,7 @@ interface ProbeContext {
   streamRes: NormResource;
   metaRes?: NormResource;
   configurable: boolean;
+  sameStreamsForEveryTitle: boolean;
   catalog: CatalogFetcher;
   meta(type: string, id: string): Promise<MetaFetch>;
   borrowed(): Promise<TestContent[]>;
@@ -1022,6 +1032,7 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
       streamRes,
       metaRes,
       configurable: live.behaviorHints?.configurable === true,
+      sameStreamsForEveryTitle: override?.sameStreamsForEveryTitle !== undefined,
       catalog: catalogOnce,
       meta: metaOnce,
       borrowed: () =>
@@ -1180,7 +1191,7 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
         });
       log.debug({ step: "catalog" }, "own catalogs, the only ID source, all failed");
     } else {
-      const checks = judgeStreamFetches(fetches, ctx.configurable);
+      const checks = judgeStreamFetches(fetches, ctx.configurable, ctx.sameStreamsForEveryTitle);
       const checkOf = new Map(fetches.map((f, i) => [f, checks[i]]));
       streamAnswers = fetches.map((f) => f.answer);
       tried.push(

@@ -246,11 +246,16 @@ describe("candidatesFor", () => {
     expect(cs.every((c) => c.id === "tt0944947")).toBe(true);
   });
 
-  it("returns nothing for a resource without prefixes", async () => {
-    expect(await candidatesFor(res(["movie", "series"], []))).toEqual([]);
-    expect(await candidatesFor(res(["movie"], [""]))).toEqual([]);
-    expect(hasSourceFor([])).toBe(false);
-    expect(hasSourceFor([""])).toBe(false);
+  it("borrows IMDb and Kitsu IDs for a resource without prefixes, which accepts every ID", async () => {
+    const cs = await candidatesFor(res(["movie", "series"], []));
+    expect(cs.some((c) => c.type === "movie" && c.id.startsWith("tt"))).toBe(true);
+    expect(cs.some((c) => c.type === "series" && (c.episodeId ?? c.id).startsWith("tt"))).toBe(true);
+    expect((await candidatesFor(res(["movie"], [""]))).length).toBeGreaterThan(0);
+    expect(hasSourceFor([])).toBe(true);
+    expect(hasSourceFor([""])).toBe(true);
+  });
+
+  it("has no source for a prefix none supplies", () => {
     expect(hasSourceFor(["tmdb:"])).toBe(false);
   });
 

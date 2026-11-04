@@ -64,6 +64,15 @@ describe("missingRouteStatus", () => {
     expect(missingRouteStatus(text, manifestOverWarp)).toBe(404);
   });
 
+  it("recognises a JSON not-found message naming the path (Premiumize Library)", () => {
+    const own = {
+      ...expressCannotGet,
+      data: { message: "Not Found - /stream/movie/tt0111161.json" },
+      parseError: undefined,
+    };
+    expect(missingRouteStatus(own, manifestOverWarp)).toBe(404);
+  });
+
   it("doesn't take a JSON 404 the addon chose to send for a missing route", () => {
     const own = {
       ...expressCannotGet,
@@ -145,12 +154,33 @@ describe("unconfiguredReason", () => {
     expect(await unconfiguredReason(configurable, [], manifestOverWarp, BASE)).toBeUndefined();
   });
 
-  it("needs a manifest that offers configuration (40th PROJECT's static 404s)", async () => {
+  it("takes missing routes on a manifest that doesn't say it is configurable, if it serves a configure page (Cauldron, Premiumize Library)", async () => {
     configurePage = CONFIGURE_PAGE;
+    const plain = { ...configurable, behaviorHints: {} } as Manifest;
+    const fastApi = { ...expressCannotGet, data: { detail: "Not Found" }, parseError: undefined };
+    expect(await unconfiguredReason(plain, [fastApi], manifestOverWarp, BASE)).toBe(
+      "unconfigured content routes answer HTTP 404",
+    );
+  });
+
+  it("needs a configure page when the manifest doesn't say it is configurable (40th PROJECT's static 404s)", async () => {
+    configurePage = { ...CONFIGURE_PAGE, status: 404, attempts: [attempt("WARP", 404)] };
     const plain = { ...configurable, behaviorHints: {} } as Manifest;
     expect(
       await unconfiguredReason(plain, [expressCannotGet], manifestOverWarp, BASE),
     ).toBeUndefined();
+  });
+
+  it("doesn't take a 403 on a manifest that doesn't say it is configurable", async () => {
+    configurePage = CONFIGURE_PAGE;
+    const plain = { ...configurable, behaviorHints: {} } as Manifest;
+    const forbidden: ContentAnswer = {
+      status: 403,
+      data: undefined,
+      parseError: EXPRESS_404,
+      attempts: [attempt("WARP", 403), attempt("direct", 403)],
+    };
+    expect(await unconfiguredReason(plain, [forbidden], manifestOverWarp, BASE)).toBeUndefined();
   });
 
   it("needs a configure page on the addon's own host (Easynews while its backend timed out)", async () => {

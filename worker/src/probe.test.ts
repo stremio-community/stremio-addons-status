@@ -1155,6 +1155,22 @@ describe("probe stream content", () => {
     expect(configurable.detail.mode).toBe("needs-config");
   });
 
+  it("keeps cards an addon is pinned to repeat for every title (Stremio Status)", async () => {
+    const card = {
+      name: "Stremio Status",
+      title: "⛔ Torrentio · Status: Down",
+      url: "https://status.test/torrentio",
+    };
+    overrides.u = { name: "Stremio Status", sameStreamsForEveryTitle: "a status board" };
+    try {
+      const r = await probeDual([card], [card], { behaviorHints: { configurable: true } });
+      expect(r.success).toBe(true);
+      expect(r.detail.mode).toBe("content");
+    } finally {
+      delete overrides.u;
+    }
+  });
+
   it("is DOWN when every title gets 'no data' (Kinopoisk рейтинг)", async () => {
     const none = {
       name: "Kinopoisk рейтинг",

@@ -19,6 +19,8 @@ export interface AddonOverride {
   needsConfig?: string;
   /** Fixed test IDs for an addon whose scope no ID source covers; the first of each type its stream resource advertises is probed before any other source. */
   testIds?: Array<{ type: string; id: string }>;
+  /** The addon answers the same streams for every title by design (a status board), so a stream repeated across titles isn't a placeholder; the value says why. */
+  sameStreamsForEveryTitle?: string;
 }
 
 export const OVERRIDES: Readonly<Record<string, AddonOverride>> = {
@@ -73,6 +75,14 @@ export const OVERRIDES: Readonly<Record<string, AddonOverride>> = {
   "b29db3ec-6b91-492d-84bd-c1da1c14a6e3": {
     name: "MediaFusion | ElfHosted",
     needsConfig: "this instance streams only through a configured debrid or Usenet provider",
+  },
+  "aa29281b-b458-4d05-ab56-6bd416c8fb87": {
+    name: "Shared Debrid Notifier",
+    needsConfig: "the listed URL is the route template for a user's own token, gist and session",
+  },
+  "64368278-71cf-498f-ab7d-62455bd6090d": {
+    name: "Stremio Status",
+    sameStreamsForEveryTitle: "it shows the same addon status cards on every title",
   },
   "47c623dd-5a03-425e-aff9-41505675a7b9": {
     name: "M_Rulz Scraper (Telugu)",

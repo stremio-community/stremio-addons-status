@@ -10,7 +10,10 @@ describe("OVERRIDES", () => {
       expect(o.name, uuid).not.toBe("");
       expect(o.testConfig ?? "", uuid).not.toMatch(/^\/|\/$|manifest\.json/);
       expect(o.needsConfig ?? "x", uuid).not.toBe("");
-      expect(o.testConfig ?? o.needsConfig ?? o.testIds, uuid).toBeDefined();
+      expect(
+        o.testConfig ?? o.needsConfig ?? o.testIds ?? o.sameStreamsForEveryTitle,
+        uuid,
+      ).toBeDefined();
       for (const t of o.testIds ?? []) expect(t.id, uuid).not.toBe("");
     }
   });

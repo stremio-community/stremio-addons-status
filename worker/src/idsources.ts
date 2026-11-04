@@ -325,8 +325,12 @@ const kitsuImdb: IdSource = {
 
 const SOURCES: IdSource[] = [manifestIds, youtube, wellKnown, cinemeta, kitsu, kitsuImdb];
 
+/** A resource without prefixes is sent every ID, so it gets the ones Stremio's own Cinemeta and Kitsu catalogs produce. */
+const ANY_ID_PREFIXES = ["tt", "kitsu"];
+
 function matchingSources(idPrefixes: readonly string[]): IdSource[] {
-  const wanted = idPrefixes.map(normalizePrefix);
+  const declared = idPrefixes.map(normalizePrefix).filter((p) => p !== "");
+  const wanted = declared.length > 0 ? declared : ANY_ID_PREFIXES;
   return SOURCES.filter((s) => s.matches(wanted));
 }
 
