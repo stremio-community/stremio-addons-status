@@ -777,7 +777,10 @@ async function* sequence<T>(...sources: Array<Iterable<T> | AsyncIterable<T>>): 
   for (const source of sources) yield* source;
 }
 
-/** Real titles from the first few catalogs that have any, fetching each catalog only once the previous one's titles are used up. */
+/**
+ * Real titles from the first few catalogs that have any, fetching each catalog only once the previous one's titles are used up.
+ * A catalog holding only a plea to configure or an error notice speaks for the whole addon, so the walk ends there; donation and news tiles don't.
+ */
 async function* catalogItems(
   fetch: CatalogFetcher,
   plans: CatalogPlan[],
@@ -790,6 +793,7 @@ async function* catalogItems(
       attempts.push(attempt);
       if (attempt.kind !== "empty") break;
     }
+    if (attempt?.notice && attempt.notice.placeholder !== "no-content") return;
     yield* attempt?.items.slice(0, ITEMS_PER_CATALOG) ?? [];
   }
 }

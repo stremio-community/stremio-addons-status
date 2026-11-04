@@ -1286,6 +1286,34 @@ describe("probe catalog notices", () => {
     });
   });
 
+  it("stops at a catalog asking for a key rather than passing on a later catalog (Pictorium)", async () => {
+    const m = addon({
+      types: ["movie"],
+      resources: ["catalog", "meta"],
+      catalogs: [
+        { type: "movie", id: "pictorium-jw-movies", name: "JustWatch" },
+        { type: "movie", id: "pictorium-netflix-movies", name: "Netflix" },
+      ],
+    });
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/catalog/movie/pictorium-jw-movies.json",
+        {
+          status: 200,
+          data: { metas: [notice("pictorium:notice:missing-tmdb-key", "Chiave TMDB richiesta")] },
+        },
+      ],
+      [
+        "/catalog/movie/pictorium-netflix-movies.json",
+        { status: 200, data: { metas: [{ id: "tmdb:1571955", type: "movie", name: "Real" }] } },
+      ],
+    ]);
+    const r = await probe(m);
+    expect(r.detail.mode).toBe("needs-config");
+    expect(r.detail.configReason).toBe("Chiave TMDB richiesta");
+  });
+
   it("is DOWN when the only catalog item says the service ended (Nebula Sports)", async () => {
     const m = addon({
       types: ["sports"],
