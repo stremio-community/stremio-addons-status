@@ -51,3 +51,44 @@ export function resourceAccepts(res: NormResource, type: string, id: string): bo
   const prefixes = effectivePrefixes(res);
   return prefixes.length === 0 || prefixes.some((p) => id.startsWith(p));
 }
+
+/**
+ * Settings the manifest marks `required` without a `default`, so no install works until the user fills them in.
+ * SDK manifests declare `config` as an array of `{ key, required, default }`; older ones as an object keyed by setting.
+ */
+export function requiredConfigKeys(m: Manifest): string[] {
+  const config: unknown = (m as { config?: unknown }).config;
+  const entries: Array<[unknown, unknown]> = Array.isArray(config)
+    ? config.map((c) => [(c as { key?: unknown } | null)?.key, c])
+    : config && typeof config === "object"
+      ? Object.entries(config)
+      : [];
+  return entries.flatMap(([key, c]) => {
+    const o = c as Record<string, unknown> | null;
+    const required = o?.required === true && (o.default === undefined || o.default === null);
+    return required && typeof key === "string" && key !== "" ? [key] : [];
+  });
+}
+
+/**
+ * Why the manifest itself says it serves nothing until configured, or undefined when it doesn't.
+ * Stremio reads only `behaviorHints.configurationRequired`, but a root-level flag or a required setting states the same intent.
+ */
+export function declaredConfigRequirement(m: Manifest): string | undefined {
+  const root = m as { configurationRequired?: unknown };
+  if (m.behaviorHints?.configurationRequired === true || root.configurationRequired === true) {
+    return "manifest sets configurationRequired";
+  }
+  const keys = requiredConfigKeys(m);
+  return keys.length > 0 ? `manifest requires setting ${keys.join(", ")}` : undefined;
+}
+
+/** Whether the addon offers configuration at all, which makes an unconfigured listing a likely template. */
+export function invitesConfiguration(m: Manifest): boolean {
+  const root = m as { configurable?: unknown };
+  return (
+    m.behaviorHints?.configurable === true ||
+    root.configurable === true ||
+    declaredConfigRequirement(m) !== undefined
+  );
+}

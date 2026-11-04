@@ -1,3 +1,5 @@
+import type { NormalizedAddon } from "./types.js";
+
 /**
  * Curated per-addon probe settings, keyed by the addon's uuid.
  * Everything here is public: never put a secret, a user's config or a configured base URL in it.
@@ -20,4 +22,10 @@ export const OVERRIDES: Readonly<Record<string, AddonOverride>> = {};
 
 export function overrideFor(uuid: string): AddonOverride | undefined {
   return OVERRIDES[uuid];
+}
+
+/** The base URL the probe requests, which carries the addon's test config when it has one. */
+export function probeBaseUrl(addon: Pick<NormalizedAddon, "uuid" | "baseUrl">): string {
+  const testConfig = overrideFor(addon.uuid)?.testConfig;
+  return testConfig ? `${addon.baseUrl}/${testConfig}` : addon.baseUrl;
 }

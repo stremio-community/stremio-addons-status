@@ -198,6 +198,22 @@ describe("buildConditions", () => {
     ]);
   });
 
+  it("strips the probed base URL, test config included, before the listed one", () => {
+    const probed = "https://subs.example.org/%7B%22lang%22%3A%22eng%22%7D";
+    const [manifest] = buildConditions(
+      verdict({
+        live: false,
+        livenessError: `unreachable (fetch failed for ${probed}/manifest.json)`,
+        manifestDetails: [],
+        mode: "content",
+        perResource: [],
+      }),
+      "https://subs.example.org",
+      probed,
+    );
+    expect(manifest.condition).toBe("manifest: unreachable (fetch failed for /manifest.json)");
+  });
+
   it("trims details to what Gatus accepts instead of losing the push", () => {
     const [, stream] = buildConditions(
       verdict({

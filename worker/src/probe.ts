@@ -4,7 +4,12 @@ import { attemptsOf, describeParseError, getJson, type Attempt, type ParseError 
 import { encodeId, errMsg } from "./utils.js";
 import { hasSourceFor, resolveForPrefixes, type TestContent } from "./idsources.js";
 import { logger } from "./logger.js";
-import { missingManifestFields, normalizeResources } from "./manifest.js";
+import {
+  declaredConfigRequirement,
+  missingManifestFields,
+  normalizeResources,
+} from "./manifest.js";
+import { overrideFor, probeBaseUrl } from "./overrides.js";
 import {
   classifyStream,
   placeholderMeta,
@@ -13,6 +18,7 @@ import {
   type MetaNotice,
   type StreamClass,
 } from "./streams.js";
+import { unconfiguredReason, type ContentAnswer } from "./unconfigured.js";
 import type {
   DetailRow,
   NormalizedAddon,
@@ -133,6 +139,8 @@ interface CatalogProbeResult {
   details: DetailRow[];
   /** Set when every item was a notice ("TMDB key required", a donation tile), so the catalog offers nothing to test with. */
   notice?: MetaNotice;
+  /** Unset when the request threw. */
+  answer?: ContentAnswer;
 }
 
 async function fetchCatalogCandidate(
@@ -145,12 +153,11 @@ async function fetchCatalogCandidate(
 
   const path = `/catalog/${picked.catalog.type}/${encodeId(picked.catalog.id)}${picked.extraPath}.json`;
   try {
-    const { status, data, parseError, attempts } = await getJson<CatalogResponse>(
-      baseUrl + path,
-      config.timeouts.catalog,
-    );
+    const answer = await getJson<CatalogResponse>(baseUrl + path, config.timeouts.catalog);
+    const { status, data, parseError, attempts } = answer;
     if (!isOkStatus(status)) {
       return {
+        answer,
         ok: false,
         summary: `HTTP ${status}`,
         details: requestRows(path, attempts, { reason: `addon responded with HTTP ${status}` }),
@@ -158,6 +165,7 @@ async function fetchCatalogCandidate(
     }
     if (parseError) {
       return {
+        answer,
         ok: false,
         summary: describeParseError(parseError).summary,
         details: requestRows(path, attempts, { parseError }),
@@ -170,7 +178,12 @@ async function fetchCatalogCandidate(
         metas.length === 0
           ? "returned no metas"
           : `none of ${metas.length} metas has an id, type and name`;
-      return { ok: false, summary: "empty", details: requestRows(path, attempts, { reason }) };
+      return {
+        answer,
+        ok: false,
+        summary: "empty",
+        details: requestRows(path, attempts, { reason }),
+      };
     }
     const firstReal = valid.find((m) => placeholderMeta(m) === undefined);
     if (!firstReal) {
@@ -228,6 +241,8 @@ interface StreamFetch {
   streams: StreamClass[];
   error?: string;
   parseError?: ParseError;
+  /** Unset when the request threw. */
+  answer?: ContentAnswer;
 }
 
 type Placeholder = Extract<StreamClass, { kind: "placeholder" }> & { repeated?: boolean };
@@ -439,6 +454,8 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
   const perResource: PerResourceResult[] = [];
   // Child logger scoped to this addon; every step below traces on it so the path to the verdict is reconstructable.
   const log = logger.child({ addon: addon.slug });
+  const override = overrideFor(addon.uuid);
+  const base = probeBaseUrl(addon);
   log.debug({ step: "start", baseUrl: addon.baseUrl }, "probe start");
 
   // Step 1: Liveness floor.
@@ -459,9 +476,10 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
     );
   let live: Manifest;
   let manifestDetails: DetailRow[];
+  let manifestAttempts: Attempt[];
   try {
     const { status, data, parseError, attempts } = await getJson<unknown>(
-      addon.baseUrl + manifestPath,
+      base + manifestPath,
       config.timeouts.manifest,
     );
     if (!isOkStatus(status)) {
@@ -488,7 +506,11 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
       );
     }
     live = data as Manifest;
+    manifestAttempts = attempts;
     manifestDetails = requestRows(manifestPath, attempts);
+    if (override?.testConfig) {
+      manifestDetails.push({ label: "Note", value: "probed with a public test config" });
+    }
   } catch (e) {
     log.debug({ step: "manifest", err: errMsg(e) }, "manifest fetch threw → DOWN");
     return unreachable(errMsg(e), attemptsOf(e));
@@ -523,9 +545,10 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
     });
   };
 
-  // Step 2: Discovery / early liveness-only.
-  if (live.behaviorHints?.configurationRequired === true)
-    return livenessOnly("configurationRequired");
+  // Step 2: Discovery / early needs-config.
+  if (override?.needsConfig) return needsConfiguration(override.needsConfig);
+  const declared = override?.testConfig ? undefined : declaredConfigRequirement(live);
+  if (declared) return needsConfiguration(declared);
 
   const streamRes = norm.find((r) => r.name === "stream");
   const metaRes = norm.find((r) => r.name === "meta");
@@ -549,13 +572,38 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
   const streamTargets: StreamProbeTarget[] = [];
   const catalogChecks: CatalogProbeResult[] = [];
 
+  const curated: TestContent[] = (override?.testIds ?? []).map((t) => ({
+    ...t,
+    source: "curated",
+  }));
+  if (curated.length > 0) {
+    if (streamRes) {
+      for (const probeType of advertisedStreamTypes) {
+        const target = pickCandidateForType(curated, probeType);
+        if (target) streamTargets.push(target);
+      }
+      if (streamTargets.length === 0) {
+        const target = pickCandidate(curated, streamRes.types);
+        if (target) streamTargets.push({ ...target, probeType: target.type });
+      }
+    }
+    test = streamTargets[0] ?? curated[0];
+    log.debug(
+      { step: "testid", source: "curated", targets: streamTargets.map((t) => `${t.type}:${t.id}`) },
+      "using curated test IDs",
+    );
+  }
+
   if (catalogTestable) {
     if (streamRes) {
-      if (advertisedStreamTypes.length > 0) {
+      const uncoveredTypes = advertisedStreamTypes.filter(
+        (probeType) => !streamTargets.some((target) => target.probeType === probeType),
+      );
+      if (uncoveredTypes.length > 0) {
         const results = await Promise.all(
-          advertisedStreamTypes.map(async (probeType) => ({
+          uncoveredTypes.map(async (probeType) => ({
             probeType,
-            found: await fetchCatalogCandidate(addon.baseUrl, catalogs, probeType),
+            found: await fetchCatalogCandidate(base, catalogs, probeType),
           })),
         );
         for (const { probeType, found } of results) {
@@ -579,7 +627,7 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
                 (c) => streamRes.types.includes(c.type) && !isTargetedStreamProbeType(c.type),
               )
             : catalogs;
-        const found = await fetchCatalogCandidate(addon.baseUrl, fallbackCatalogs);
+        const found = await fetchCatalogCandidate(base, fallbackCatalogs);
         if (found) {
           catalogChecks.push(found);
           if (found.ok && found.content) {
@@ -609,7 +657,7 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
         );
       }
     } else {
-      const found = await fetchCatalogCandidate(addon.baseUrl, catalogs);
+      const found = await fetchCatalogCandidate(base, catalogs);
       if (found) {
         catalogChecks.push(found);
         perResource.push({
@@ -618,14 +666,14 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
           summary: found.summary,
           details: found.details,
         });
-        test = found.content ?? null;
-        if (test) {
+        test ??= found.content ?? null;
+        if (found.content) {
           log.debug(
             {
               step: "testid",
               source: "catalog",
-              type: test.type,
-              id: test.id,
+              type: found.content.type,
+              id: found.content.id,
             },
             "sourced test ID from own catalog",
           );
@@ -705,7 +753,7 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
   const ensureEpisodeId = async (target: TestContent & { probeType?: string }): Promise<void> => {
     if (target.episodeId || !EPISODIC_TYPES.has(target.type)) return;
     const resolvedEpisodeId = metaRes
-      ? await firstEpisodeId(addon.baseUrl, target.type, target.id)
+      ? await firstEpisodeId(base, target.type, target.id)
       : undefined;
     const fallback = resolvedEpisodeId ?? fallbackEpisodeId(target.type, target.id);
     target.episodeId = fallback;
@@ -730,6 +778,8 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
   // Step 4: Validate resources.
   let streamCounts: ProbeResult["detail"]["streamCounts"];
   let streamOutcome: StreamVerdict | undefined;
+  let streamAnswers: Array<ContentAnswer | undefined> = [];
+  let metaAnswer: ContentAnswer | undefined;
 
   if (streamRes) {
     const targetedStreamMode =
@@ -760,21 +810,20 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
         const type = target.type;
         const id = target.episodeId ?? target.id;
         const path = `/stream/${type}/${encodeId(id)}.json`;
-        const base = { target, id, path, testId: describeTestId(id, target.source) };
+        const request = { target, id, path, testId: describeTestId(id, target.source) };
         try {
-          const { status, data, parseError, attempts } = await getJson<StreamResponse>(
-            addon.baseUrl + path,
-            config.timeouts.stream,
-          );
+          const answer = await getJson<StreamResponse>(base + path, config.timeouts.stream);
+          const { status, data, parseError, attempts } = answer;
           const raw = Array.isArray(data?.streams) ? data!.streams! : [];
-          const streams = raw.map((st) => classifyStream(st, { baseUrl: addon.baseUrl }));
+          const streams = raw.map((st) => classifyStream(st, { baseUrl: base }));
           const unparsed = isOkStatus(status) ? parseError : undefined;
-          return { ...base, status, attempts, streams, parseError: unparsed };
+          return { ...request, status, attempts, streams, parseError: unparsed, answer };
         } catch (e) {
-          return { ...base, attempts: attemptsOf(e), streams: [], error: errMsg(e) };
+          return { ...request, attempts: attemptsOf(e), streams: [], error: errMsg(e) };
         }
       }),
     );
+    streamAnswers = streamFetches.map((f) => f.answer);
     const streamChecks = judgeStreamFetches(
       streamFetches,
       live.behaviorHints?.configurable === true,
@@ -843,10 +892,9 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
       const path = `/meta/${test.type}/${encodeId(test.id)}.json`;
       const testId = describeTestId(test.id, test.source);
       try {
-        const { status, data, parseError, attempts } = await getJson<MetaResponse>(
-          addon.baseUrl + path,
-          config.timeouts.meta,
-        );
+        const answer = await getJson<MetaResponse>(base + path, config.timeouts.meta);
+        metaAnswer = answer;
+        const { status, data, parseError, attempts } = answer;
         const unparsed = isOkStatus(status) ? parseError : undefined;
         const missing = missingMetaFields(data?.meta);
         const reason = !isOkStatus(status)
@@ -893,7 +941,7 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
     const path = `/subtitles/${test.type}/${encodeId(id)}.json`;
     try {
       const { data, parseError, attempts } = await getJson<{ subtitles?: unknown[] }>(
-        addon.baseUrl + path,
+        base + path,
         config.timeouts.meta,
       );
       const ok = Array.isArray(data?.subtitles);
@@ -948,6 +996,15 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
       primary === "catalog" ? "no testable catalog" : `no test ID for ${primary}`,
     );
   }
+
+  const primaryAnswers =
+    primary === "stream"
+      ? streamAnswers
+      : primary === "catalog"
+        ? catalogChecks.map((c) => c.answer)
+        : [metaAnswer];
+  const unconfigured = unconfiguredReason(live, primaryAnswers, manifestAttempts);
+  if (unconfigured) return needsConfiguration(unconfigured);
 
   // Manifest up but primary content failed.
   // The log message carries the full per-resource breakdown, not just the primary, so a DOWN is explainable from the logs alone.

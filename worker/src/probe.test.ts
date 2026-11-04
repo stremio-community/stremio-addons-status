@@ -1,12 +1,19 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { afterEach, describe, it, expect, vi, beforeEach } from "vitest";
 import type { Manifest } from "@stremio-addon/sdk";
 import type { NormalizedAddon } from "./types.js";
 import type { TestContent } from "./idsources.js";
-import type { ParseError } from "./http.js";
+import type { Attempt, ParseError } from "./http.js";
 
 // --- mocks -----------------------------------------------------------------
 
-type RouteResult = { status: number; data: unknown; parseError?: ParseError; redirect?: string };
+type RouteResult = {
+  status: number;
+  data: unknown;
+  parseError?: ParseError;
+  redirect?: string;
+  /** Replaces the single direct attempt the mock reports by default. */
+  attempts?: Attempt[];
+};
 let router: (url: string) => RouteResult;
 
 const idsourcesMock = {
@@ -17,10 +24,10 @@ const idsourcesMock = {
 vi.mock("./http.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./http.js")>()),
   getJson: async (url: string) => {
-    const { redirect, ...res } = router(url);
+    const { redirect, attempts, ...res } = router(url);
     return {
       ...res,
-      attempts: [
+      attempts: attempts ?? [
         { route: "direct", status: res.status, durationMs: 1, ...(redirect ? { redirect } : {}) },
       ],
     };
@@ -36,6 +43,8 @@ vi.mock("./idsources.js", () => ({
 
 // Import after mocks are registered.
 const { probe } = await import("./probe.js");
+const { OVERRIDES } = await import("./overrides.js");
+const overrides = OVERRIDES as Record<string, import("./overrides.js").AddonOverride>;
 
 // --- helpers ---------------------------------------------------------------
 
@@ -601,7 +610,7 @@ describe("probe", () => {
     expect(r.error).toBe("manifest");
   });
 
-  it("(g) configurationRequired with reachable manifest ⇒ UP liveness-only", async () => {
+  it("(g) configurationRequired with reachable manifest ⇒ UP needs-config", async () => {
     const m = addon({
       resources: ["stream"],
       types: ["movie"],
@@ -610,8 +619,8 @@ describe("probe", () => {
     router = routes([["/manifest.json", manifestOk(m.manifest)]]);
     const r = await probe(m);
     expect(r.success).toBe(true);
-    expect(r.detail.mode).toBe("liveness-only");
-    expect(r.message).toContain("configurationRequired");
+    expect(r.detail.mode).toBe("needs-config");
+    expect(r.detail.configReason).toBe("manifest sets configurationRequired");
   });
 
   it("catalog-less scraper with unknown ID prefix ⇒ UP liveness-only", async () => {
@@ -1408,5 +1417,234 @@ describe("probe catalog notices", () => {
     const r = await probe(m);
     expect(r.success).toBe(false);
     expect(r.detail.primary).toBe("stream");
+  });
+});
+
+describe("probe needs-configuration", () => {
+  afterEach(() => {
+    for (const uuid of Object.keys(overrides)) delete overrides[uuid];
+  });
+
+  const requested: string[] = [];
+  const recording = (map: Array<[string, RouteResult]>) => {
+    requested.length = 0;
+    const route = routes(map);
+    return (url: string) => {
+      requested.push(url);
+      return route(url);
+    };
+  };
+
+  /** Express's answer for a path no route matches, as an unconfigured Magnetio or Zamunda BG serves it. */
+  const CANNOT_GET: RouteResult = {
+    status: 404,
+    data: undefined,
+    parseError: {
+      html: true,
+      contentType: "text/html; charset=utf-8",
+      title: "Error",
+      excerpt:
+        '<!DOCTYPE html> <html lang="en"> <head> <meta charset="utf-8"> <title>Error</title>',
+    },
+  };
+
+  const scraper = (manifest: Partial<Manifest> = {}) => {
+    idsourcesMock.hasSourceFor = () => true;
+    idsourcesMock.resolveForPrefixes = async () => [
+      { type: "movie", id: "tt0111161" },
+      { type: "series", id: "tt0903747", episodeId: "tt0903747:1:1" },
+    ];
+    return addon({
+      types: ["movie", "series"],
+      resources: [{ name: "stream", types: ["movie", "series"], idPrefixes: ["tt"] }],
+      ...manifest,
+    });
+  };
+
+  it("honours a root-level configurationRequired without asking for content (ItsOut | ElfHosted)", async () => {
+    const m = scraper();
+    const manifest = { ...m.manifest, configurable: true, configurationRequired: true };
+    router = recording([["/manifest.json", manifestOk(manifest as Manifest)]]);
+    const r = await probe(m);
+    expect(r.detail.mode).toBe("needs-config");
+    expect(r.detail.configReason).toBe("manifest sets configurationRequired");
+    expect(requested).toEqual([`${BASE}/manifest.json`]);
+  });
+
+  it("treats a required setting without a default as configurationRequired (Eh! Iptv)", async () => {
+    const m = scraper({ behaviorHints: { configurable: true } });
+    const manifest = {
+      ...m.manifest,
+      config: [{ key: "token", type: "text", title: "Access token", required: true }],
+    };
+    router = recording([["/manifest.json", manifestOk(manifest as Manifest)]]);
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(r.detail.configReason).toBe("manifest requires setting token");
+  });
+
+  it("reports a configurable addon whose stream route is missing as needing configuration (Magnetio)", async () => {
+    const m = scraper({ behaviorHints: { configurable: true } });
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      ["/stream/", CANNOT_GET],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(r.detail.mode).toBe("needs-config");
+    expect(r.detail.configReason).toBe("unconfigured content routes answer HTTP 404");
+    expect(r.detail.perResource.find((p) => p.resource === "stream")?.ok).toBe(false);
+  });
+
+  it("keeps a missing stream route DOWN when the addon offers no configuration (40th PROJECT)", async () => {
+    const m = scraper();
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      ["/stream/", CANNOT_GET],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(false);
+  });
+
+  it("keeps a configurable addon answering no streams DOWN (WebStreamrMBG)", async () => {
+    const m = scraper({ behaviorHints: { configurable: true } });
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      ["/stream/", { status: 200, data: { streams: [] } }],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(false);
+  });
+
+  it("reports the same 403 on both routes as needing configuration when the manifest loaded (Comet | ElfHosted)", async () => {
+    const m = scraper({ behaviorHints: { configurable: true } });
+    const forbidden: RouteResult = {
+      status: 403,
+      data: undefined,
+      parseError: { html: false, contentType: "text/plain", excerpt: "Forbidden" },
+      attempts: [
+        { route: "WARP", status: 403, durationMs: 1 },
+        { route: "direct", status: 403, durationMs: 1 },
+      ],
+    };
+    router = routes([
+      [
+        "/manifest.json",
+        { ...manifestOk(m.manifest), attempts: [{ route: "WARP", status: 200, durationMs: 1 }] },
+      ],
+      ["/stream/", forbidden],
+    ]);
+    const r = await probe(m);
+    expect(r.detail.mode).toBe("needs-config");
+    expect(r.detail.configReason).toBe("unconfigured content routes answer HTTP 403");
+  });
+
+  it("reports a configurable catalog addon whose catalog route is missing as needing configuration", async () => {
+    const m = addon({
+      types: ["movie"],
+      resources: ["catalog"],
+      catalogs: [{ type: "movie", id: "pending", name: "Pending" }],
+      behaviorHints: { configurable: true },
+    });
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      ["/catalog/", { status: 404, data: { detail: "Not Found" } }],
+    ]);
+    const r = await probe(m);
+    expect(r.detail.mode).toBe("needs-config");
+  });
+
+  it("lets a needsConfig pin win without asking for content (Kast Alldebrid)", async () => {
+    const m = scraper({ behaviorHints: { configurable: true } });
+    overrides[m.uuid] = {
+      name: "Kast Alldebrid",
+      needsConfig: "streams need the user's AllDebrid key",
+    };
+    router = recording([
+      ["/manifest.json", manifestOk(m.manifest)],
+      ["/stream/", { status: 200, data: { streams: [PLAYABLE] } }],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(r.detail.mode).toBe("needs-config");
+    expect(r.detail.configReason).toBe("streams need the user's AllDebrid key");
+    expect(requested).toEqual([`${BASE}/manifest.json`]);
+  });
+
+  it("keeps a pinned addon DOWN when its manifest is unreachable", async () => {
+    const m = scraper();
+    overrides[m.uuid] = { name: "Statusio", needsConfig: "empty without debrid tokens" };
+    router = routes([["/manifest.json", { status: 502, data: undefined }]]);
+    const r = await probe(m);
+    expect(r.success).toBe(false);
+  });
+
+  it("probes curated test IDs before any ID source (40th PROJECT)", async () => {
+    const m = scraper({
+      types: ["series"],
+      resources: [{ name: "stream", types: ["series"], idPrefixes: ["tt"] }],
+    });
+    overrides[m.uuid] = {
+      name: "40th PROJECT",
+      testIds: [
+        { type: "series", id: "tt0088509" },
+        { type: "series", id: "tt0121220" },
+      ],
+    };
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      ["/stream/series/tt0088509:1:1.json", { status: 200, data: { streams: [EPISODE] } }],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(r.detail.mode).toBe("content");
+    const stream = r.detail.perResource.find((p) => p.resource === "stream");
+    expect(stream?.details).toContainEqual({ label: "Test ID", value: "tt0088509:1:1 (curated)" });
+  });
+
+  it("content-checks a configurationRequired addon under its public test config, which no row shows (Anime Catalogs)", async () => {
+    const testConfig = "%7B%22search%22%3A%22on%22%7D";
+    const m = addon({
+      types: ["anime"],
+      resources: ["catalog"],
+      catalogs: [],
+      behaviorHints: { configurable: true, configurationRequired: true },
+    });
+    overrides[m.uuid] = { name: "Anime Catalogs", testConfig };
+    const configured = {
+      ...m.manifest,
+      catalogs: [{ type: "anime", id: "top-airing", name: "Top Airing" }],
+      behaviorHints: { configurable: true },
+    };
+    const configuredBase = `${BASE}/${testConfig}`;
+    router = recording([
+      [`${configuredBase}/manifest.json`, manifestOk(configured as Manifest)],
+      [
+        `${configuredBase}/catalog/anime/top-airing.json`,
+        { status: 200, data: { metas: [{ id: "kitsu:12", type: "series", name: "One Piece" }] } },
+      ],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(r.detail.mode).toBe("content");
+    expect(r.detail.manifestDetails).toContainEqual({
+      label: "Note",
+      value: "probed with a public test config",
+    });
+    const rows = [r.detail.manifestDetails, ...r.detail.perResource.map((p) => p.details)].flat();
+    expect(rows.some((row) => row.value.includes(testConfig))).toBe(false);
+    expect(requested.every((url) => url.startsWith(configuredBase))).toBe(true);
+  });
+
+  it("probes under the test config even when the configured manifest still says configurationRequired", async () => {
+    const m = scraper({ behaviorHints: { configurable: true, configurationRequired: true } });
+    overrides[m.uuid] = { name: "Strelingo", testConfig: "eng" };
+    router = routes([
+      [`${BASE}/eng/manifest.json`, manifestOk(m.manifest)],
+      [`${BASE}/eng/stream/movie/`, { status: 200, data: { streams: [PLAYABLE] } }],
+      [`${BASE}/eng/stream/series/`, { status: 200, data: { streams: [EPISODE] } }],
+    ]);
+    const r = await probe(m);
+    expect(r.detail.mode).toBe("content");
   });
 });
