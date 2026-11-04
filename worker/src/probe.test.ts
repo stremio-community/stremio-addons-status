@@ -1712,6 +1712,75 @@ describe("probe needs-configuration", () => {
     expect(r.detail.configReason).toBe("manifest requires setting token");
   });
 
+  const stashdb = () => {
+    const m = addon({
+      types: ["movie"],
+      idPrefixes: ["stashdb:"],
+      resources: ["catalog", "meta", "stream"],
+      catalogs: [{ type: "movie", id: "stashdb-trending", name: "Trending" }],
+      behaviorHints: { configurable: true, configurationRequired: false },
+    });
+    const manifest = {
+      ...m.manifest,
+      config: [
+        { key: "easynewsUsername", type: "text", title: "Easynews Username", required: true },
+        { key: "easynewsPassword", type: "password", title: "Easynews Password", required: true },
+      ],
+    } as Manifest;
+    return { ...m, manifest };
+  };
+
+  it("is DOWN when a required setting is declared but the own catalogs, the only ID source, are empty (StashDB - Easynews)", async () => {
+    const m = stashdb();
+    router = recording([
+      ["/manifest.json", manifestOk(m.manifest)],
+      ["/catalog/movie/stashdb-trending.json", { status: 200, data: { metas: [] } }],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(false);
+    expect(r.detail.mode).toBe("content");
+    expect(r.detail.primary).toBe("catalog");
+    expect(r.detail.perResource.find((p) => p.resource === "catalog")?.summary).toBe("empty");
+    expect(requested.some((u) => u.includes("/stream/"))).toBe(false);
+  });
+
+  it("keeps a declared required setting needs-config when the own catalogs list titles", async () => {
+    const m = stashdb();
+    router = recording([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/catalog/movie/stashdb-trending.json",
+        { status: 200, data: { metas: [{ id: "stashdb:abc", type: "movie", name: "Scene" }] } },
+      ],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(r.detail.mode).toBe("needs-config");
+    expect(r.detail.configReason).toBe(
+      "manifest requires setting easynewsUsername, easynewsPassword",
+    );
+    expect(requested.some((u) => u.includes("/stream/"))).toBe(false);
+  });
+
+  it("keeps a declared required setting needs-config without asking catalogs when an ID source covers the stream prefixes (Eh! Iptv)", async () => {
+    const m = scraper({
+      types: ["tv", "movie", "series"],
+      idPrefixes: ["ehiptv:", "tt"],
+      resources: ["catalog", "meta", "stream"],
+      catalogs: [{ type: "tv", id: "ehiptv-live", name: "Live" }],
+      behaviorHints: { configurable: true },
+    });
+    const manifest = {
+      ...m.manifest,
+      config: [{ key: "token", type: "text", title: "Token de Acesso", required: true }],
+    } as Manifest;
+    router = recording([["/manifest.json", manifestOk(manifest)]]);
+    const r = await probe(m);
+    expect(r.detail.mode).toBe("needs-config");
+    expect(r.detail.configReason).toBe("manifest requires setting token");
+    expect(requested).toEqual([`${BASE}/manifest.json`]);
+  });
+
   it("reports a configurable addon whose stream route is missing as needing configuration (Magnetio)", async () => {
     const m = scraper({ behaviorHints: { configurable: true } });
     router = routes([

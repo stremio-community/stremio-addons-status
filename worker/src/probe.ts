@@ -36,6 +36,7 @@ import { logger, type Logger } from "./logger.js";
 import {
   declaredConfigRequirement,
   effectivePrefixes,
+  flagsConfigurationRequired,
   missingManifestFields,
   normalizeResources,
   resourceAccepts,
@@ -86,6 +87,10 @@ const SLOW_MS = 10_000;
 /** Titles a subtitles-only addon is asked for: a movie and a series where it advertises both, and one more. */
 const MAX_SUBTITLE_TITLES = 3;
 const IMDB_ID = /^tt\d+$/;
+const OWN_CATALOGS_ONLY_NOTE: DetailRow = {
+  label: "Note",
+  value: "the addon's own catalogs are its only source of stream test IDs",
+};
 
 interface CatalogResponse {
   metas?: Array<MetaPreview & { imdb_id?: string }>;
@@ -1346,7 +1351,7 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
   const declared = override?.testConfig
     ? undefined
     : declaredConfigRequirement(live, addon.baseUrl);
-  if (declared) return needsConfiguration(declared);
+  if (declared && flagsConfigurationRequired(live)) return needsConfiguration(declared);
 
   const streamRes = norm.find((r) => r.name === "stream");
   const metaRes = norm.find((r) => r.name === "meta");
@@ -1391,6 +1396,36 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
     (_plan: CatalogPlan, path: string) => path,
     (plan, path) => fetchCatalog(base, plan.catalog, path, catalogOptions),
   );
+
+  if (declared) {
+    // Without the configurationRequired flag Stremio installs the addon unconfigured, so its catalogs are what that user browses.
+    // When they are the only ID source and dead, a configured user has nothing to play either.
+    const walk: CatalogAttempt[] = [];
+    if (streamRes && ownCatalogsOnly) {
+      for await (const _ of catalogItems(catalogOnce, plans, walk)) break;
+    }
+    const dead = walk.length > 0 && walk.every((a) => a.kind === "failed" || a.kind === "empty");
+    if (!dead) return needsConfiguration(declared);
+    const w = judgeCatalogWalk(walk);
+    perResource.push({
+      resource: "catalog",
+      ok: false,
+      summary: w.summary,
+      details: [...w.details, OWN_CATALOGS_ONLY_NOTE],
+    });
+    const answers = walk.map((a) => a.answer);
+    if (await unconfiguredReason(live, answers, manifestAttempts, base)) {
+      return needsConfiguration(declared);
+    }
+    log.debug({ step: "verdict", mode: "content", declared }, "content DOWN: own catalogs dead");
+    return result(
+      false,
+      `manifest up · ${perResource.map((r) => `${r.resource}: ${r.summary}`).join(" · ")}`,
+      start,
+      { live: true, manifestDetails, mode: "content", primary: "catalog", perResource },
+      "catalog",
+    );
+  }
 
   // Step 3: Source test IDs and check the primary resource with them.
   let attempts: CatalogAttempt[] = [];
@@ -1570,12 +1605,7 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
       }
       // The addon's own catalogs are its only ID source, and they are what a user browses: their failure is the addon's.
       primary = "catalog";
-      perResource
-        .find((r) => r.resource === "catalog")!
-        .details.push({
-          label: "Note",
-          value: "the addon's own catalogs are its only source of stream test IDs",
-        });
+      perResource.find((r) => r.resource === "catalog")!.details.push(OWN_CATALOGS_ONLY_NOTE);
       log.debug({ step: "catalog" }, "own catalogs, the only ID source, all failed");
     } else {
       const checks = judgeStreamFetches(fetches, ctx.configurable, ctx.sameStreamsForEveryTitle);

@@ -84,16 +84,19 @@ function pathTexts(baseUrl: string): string[] {
   });
 }
 
+/** Whether the manifest flags `configurationRequired`, which leaves Stremio offering only its configure button, so no user browses it unconfigured. */
+export function flagsConfigurationRequired(m: Manifest): boolean {
+  const root = m as { configurationRequired?: unknown };
+  return m.behaviorHints?.configurationRequired === true || root.configurationRequired === true;
+}
+
 /**
  * Why the manifest itself says it serves nothing until configured, or undefined when it doesn't.
  * Stremio reads only `behaviorHints.configurationRequired`, but a root-level flag or a required setting states the same intent.
  * SDK addons declare their settings on configured installs too, so a required setting the listed URL's path already names counts as filled in.
  */
 export function declaredConfigRequirement(m: Manifest, baseUrl = ""): string | undefined {
-  const root = m as { configurationRequired?: unknown };
-  if (m.behaviorHints?.configurationRequired === true || root.configurationRequired === true) {
-    return "manifest sets configurationRequired";
-  }
+  if (flagsConfigurationRequired(m)) return "manifest sets configurationRequired";
   const texts = pathTexts(baseUrl);
   const keys = requiredConfigKeys(m).filter((key) => !texts.some((t) => t.includes(key)));
   return keys.length > 0 ? `manifest requires setting ${keys.join(", ")}` : undefined;
