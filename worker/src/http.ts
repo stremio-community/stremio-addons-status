@@ -87,7 +87,7 @@ function excerptOf(text: string): string {
     .replace(/[\w+/=%-]{24,}/g, "…")
     .replace(/[\s\p{Cc}]+/gu, " ")
     .trim();
-  return clean.length > EXCERPT_LENGTH ? clean.slice(0, EXCERPT_LENGTH) + "…" : clean;
+  return clean.length > EXCERPT_LENGTH ? clean.slice(0, EXCERPT_LENGTH).trimEnd() + "…" : clean;
 }
 
 function parseErrorOf(text: string, contentType: string | null): ParseError {
@@ -342,10 +342,10 @@ function errorMessageOf(data: unknown): string | undefined {
   const { error, message } = data as { error?: unknown; message?: unknown };
   const nested =
     error && typeof error === "object" ? (error as { message?: unknown }).message : undefined;
-  const text = [error, nested, message].find(
+  const parts = [error, nested, message].filter(
     (v): v is string => typeof v === "string" && v.trim() !== "",
   );
-  return text ? excerptOf(text) : undefined;
+  return parts.length > 0 ? excerptOf([...new Set(parts)].join(": ")) : undefined;
 }
 
 /** A note for the reason row when the other route's answer replaced a 2xx one without usable content. */

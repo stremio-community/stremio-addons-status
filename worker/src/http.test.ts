@@ -472,6 +472,16 @@ describe("describeStatus", () => {
     );
   });
 
+  it("joins an error code with the message that explains it", () => {
+    const data = {
+      error: "SOURCE_UNAVAILABLE",
+      message: "Não foi possível obter vídeo da fonte. Tenta novamente mais tarde.",
+    };
+    expect(describeStatus({ status: 503, data }).reason).toBe(
+      "addon responded with HTTP 503: SOURCE_UNAVAILABLE: Não foi possível obter vídeo da fonte. Tenta novamente mais…",
+    );
+  });
+
   it("keeps a URL out of the published message", () => {
     const { reason } = describeStatus({
       status: 502,
