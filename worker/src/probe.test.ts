@@ -1189,8 +1189,15 @@ describe("probe stream content", () => {
       url: "https://status.test/torrentio",
     };
     overrides.u = { name: "Stremio Status", sameStreamsForEveryTitle: "a status board" };
+    // Its cards open status pages, which aren't media and aren't meant to be.
+    let checked = 0;
+    urlcheckMock.checkUrl = async (u) => {
+      checked++;
+      return { host: new URL(u.url).hostname, verdict: "webpage", outcome: "HTTP 200 text/html" };
+    };
     try {
       const r = await probeDual([card], [card], { behaviorHints: { configurable: true } });
+      expect(checked).toBe(0);
       expect(r.success).toBe(true);
       expect(r.detail.mode).toBe("content");
     } finally {
@@ -3171,7 +3178,7 @@ describe("probe stream URL checks", () => {
     expect(streamOf(r)?.details).toContainEqual({
       label: "Reason",
       value:
-        "every checked stream URL is dead: fash1.erosnow.test NXDOMAIN; fash1.erosnow.test NXDOMAIN",
+        "no checked stream URL plays: fash1.erosnow.test NXDOMAIN; fash1.erosnow.test NXDOMAIN",
     });
     expect(streamOf(r)?.details).toContainEqual({
       label: "URL check",
@@ -3205,6 +3212,36 @@ describe("probe stream URL checks", () => {
       label: "URL check",
       value: "1 unverifiable of 1 · cloudfront.test: HTTP 403 text/html, blocked",
     });
+  });
+
+  it("passes an informational addon whose stream URLs all open web pages as a link addon (Stremio Stinger)", async () => {
+    urlcheckMock.checkUrl = async (u) => ({
+      host: new URL(u.url).hostname,
+      verdict: "webpage",
+      outcome: "HTTP 200 text/html, web page",
+    });
+    const r = await probeTv(["a"], () => [
+      { name: "🍿 Mid & Post-Credits Scenes", url: "https://aftercredits.test/2019/04/a/" },
+    ]);
+    expect(r.success).toBe(true);
+    expect(streamOf(r)?.summary).toBe("tv 1 of 1 URLs web pages");
+    expect(streamOf(r)?.details).toContainEqual({
+      label: "Note",
+      value: "link addon: links only, not content-checked",
+    });
+  });
+
+  it("is DOWN when stream URLs are web pages beside a dead host (StreamPlay's embeds)", async () => {
+    urlcheckMock.checkUrl = verdictOf({
+      "vidlink.test": { verdict: "webpage", outcome: "HTTP 200 text/html, web page" },
+      "vidsrc.test": NXDOMAIN,
+    });
+    const r = await probeTv(["a", "b"], (id) => [
+      { name: "Vidlink", url: `https://vidlink.test/movie/${id}` },
+      { name: "Vidsrc", url: `https://vidsrc.test/embed/movie/${id}` },
+    ]);
+    expect(r.success).toBe(false);
+    expect(streamOf(r)?.summary).toBe("tv no URL plays (2 IDs)");
   });
 
   it("does not check torrents or debrid links, which a dead URL beside them couldn't fail", async () => {

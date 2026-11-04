@@ -6,10 +6,11 @@ import { placeholderKind, strongestPlaceholder, type PlaceholderKind } from "./s
 
 /**
  * `playable`: the URL serves media or an HLS playlist.
- * `dead`: no client can play it anywhere (the host doesn't exist, the file is gone, the page isn't media).
+ * `webpage`: a web page where media is expected, which no player plays but an informational addon may mean as a link.
+ * `dead`: no client can play it anywhere (the host doesn't exist, the file is gone, a text body where media is expected).
  * `unverifiable`: it may play for someone else (geo blocks, WAF and captcha pages, rate limits, server errors, timeouts).
  */
-export type UrlVerdict = "playable" | "dead" | "unverifiable";
+export type UrlVerdict = "playable" | "webpage" | "dead" | "unverifiable";
 
 export interface UrlCheck {
   /** Publishable: stream URLs carry tokens, so only their host is kept. */
@@ -110,7 +111,7 @@ export interface UrlResponse {
   body: Uint8Array;
   /** The requested URL, whose query may carry the link's expiry. */
   url: string;
-  /** Flussonic's `x-deny-reason`: its authorization backend refused the session, typically by region. */
+  /** A CDN's header saying its access control refused the request, typically by region. */
   denyReason?: string;
 }
 
@@ -221,15 +222,18 @@ export function judgeResponse(r: UrlResponse, now = Date.now()): Omit<UrlCheck, 
       return { verdict: "playable", outcome: label };
     }
     if (BLOCKED_PAGE.test(text)) return { verdict: "unverifiable", outcome: `${label}, blocked` };
-    if (markup || TEXT_TYPE.test(contentType)) {
-      return { verdict: "dead", outcome: `${label}, not media` };
+    if (GONE_PAGE.test(visibleText(text))) return { verdict: "dead", outcome: `${label}, gone` };
+    if (markup || /html/i.test(contentType)) {
+      return { verdict: "webpage", outcome: `${label}, web page` };
     }
+    if (TEXT_TYPE.test(contentType)) return { verdict: "dead", outcome: `${label}, not media` };
     return { verdict: "unverifiable", outcome: label };
   }
-  if (status === 404 || status === 410) return { verdict: "dead", outcome: label };
+  // Kaltura answers a geo-restricted entry with a 404, saying why only in a header.
   if (r.denyReason || BLOCKED_PAGE.test(text)) {
     return { verdict: "unverifiable", outcome: `${label}, blocked` };
   }
+  if (status === 404 || status === 410) return { verdict: "dead", outcome: label };
   if (status >= 400 && status < 500 && status !== 408 && status !== 429) {
     if (GONE_PAGE.test(visibleText(text))) return { verdict: "dead", outcome: `${label}, gone` };
     if ((status === 401 || status === 403) && expired(r.url, now)) {
@@ -294,6 +298,15 @@ interface Fetched {
   denyReason?: string;
 }
 
+/** Flussonic's `x-deny-reason` (`backend_denied`), and Kaltura's `x-kaltura-app` when it names access control. */
+function denyReasonOf(headers: Headers): string | undefined {
+  const kaltura = headers.get("x-kaltura-app");
+  return (
+    headers.get("x-deny-reason") ??
+    (kaltura && /access.control|restricted/i.test(kaltura) ? kaltura : undefined)
+  );
+}
+
 async function get(
   url: string,
   headers: Record<string, string>,
@@ -309,7 +322,7 @@ async function get(
   return {
     status: res.status,
     contentType: res.headers.get("content-type") ?? undefined,
-    denyReason: res.headers.get("x-deny-reason") ?? undefined,
+    denyReason: denyReasonOf(res.headers),
     body: await readPrefix(res.body as ReadableStream<Uint8Array> | null, cap),
   };
 }
@@ -330,7 +343,12 @@ function judgeError(e: unknown, missing: boolean): Omit<UrlCheck, "host"> {
   return { verdict: "unverifiable", outcome: cause?.code ?? "network error" };
 }
 
-const VERDICT_RANK: Record<UrlVerdict, number> = { dead: 0, unverifiable: 1, playable: 2 };
+const VERDICT_RANK: Record<UrlVerdict, number> = {
+  dead: 0,
+  webpage: 1,
+  unverifiable: 2,
+  playable: 3,
+};
 
 /**
  * Check one stream URL as a player would open it: a DNS lookup, then a ranged GET with the stream's proxy headers.
@@ -363,10 +381,10 @@ export async function checkUrl({ url, headers }: UrlToCheck, now = Date.now()): 
 
 /** One URL check per line-item, e.g. `cdn.test: HTTP 206 video/mp4`. */
 export function describeUrlChecks(checks: readonly UrlCheck[]): string {
-  const counts = (["playable", "dead", "unverifiable"] as const)
+  const counts = (["playable", "webpage", "dead", "unverifiable"] as const)
     .map((v) => [v, checks.filter((c) => c.verdict === v).length] as const)
     .filter(([, n]) => n > 0)
-    .map(([v, n]) => `${n} ${v}`)
+    .map(([v, n]) => `${n} ${v === "webpage" ? "web page" : v}`)
     .join(", ");
   const each = checks.map((c) => `${c.host}: ${c.outcome}`).join("; ");
   return `${counts} of ${checks.length} · ${each}`;

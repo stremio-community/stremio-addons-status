@@ -120,14 +120,20 @@ describe("judgeResponse", () => {
     ).toBe("playable");
   });
 
-  it("calls an HTML or text page where media is expected dead (StreamPlay's embed player page)", () => {
+  it("tells a web page where media is expected from a text or error body, which is dead (StreamPlay's embed player page)", () => {
     expect(
       judge({
         contentType: "text/html",
         body: "<!DOCTYPE html><html><head><title>Vidlink</title>",
       }),
-    ).toEqual({ verdict: "dead", outcome: "HTTP 200 text/html, not media" });
-    expect(judge({ contentType: "text/plain", body: "Stream offline" }).verdict).toBe("dead");
+    ).toEqual({ verdict: "webpage", outcome: "HTTP 200 text/html, web page" });
+    expect(judge({ contentType: "text/plain", body: "Stream offline" })).toEqual({
+      verdict: "dead",
+      outcome: "HTTP 200 text/plain, not media",
+    });
+    expect(
+      judge({ contentType: "text/html", body: "<html><h1>Video not found</h1></html>" }).verdict,
+    ).toBe("dead");
   });
 
   it("leaves a 200 challenge page unverifiable", () => {
@@ -181,6 +187,14 @@ describe("judgeResponse", () => {
       "unverifiable",
     );
     expect(judge({ status: 403, denyReason: "backend_denied" }).verdict).toBe("unverifiable");
+    // SIC's Opto titles: Kaltura's 404 for a geo-restricted entry.
+    expect(
+      judge({
+        status: 404,
+        contentType: "text/html; charset=UTF-8",
+        denyReason: "exiting on error 3 - entry restricted due to access-control",
+      }).verdict,
+    ).toBe("unverifiable");
     expect(judge({ status: 403, contentType: "text/html", body: CLOUDFLARE_BLOCKED }).verdict).toBe(
       "unverifiable",
     );
@@ -265,6 +279,19 @@ describe("checkUrl", () => {
     h.state.handler = (_url, route) =>
       route === "WARP" ? { status: 403, body: CLOUDFRONT_GEO } : { status: 404 };
     expect((await plain("https://cdn.test/a.mp4")).verdict).toBe("unverifiable");
+  });
+
+  it("reads access control from Flussonic's and Kaltura's headers", async () => {
+    h.state.handler = () => ({
+      status: 404,
+      contentType: "text/html; charset=UTF-8",
+      headers: { "x-kaltura-app": "exiting on error 3 - entry restricted due to access-control" },
+    });
+    expect((await plain("https://cdnapisec.kaltura.test/p/1/playManifest/a.m3u8")).verdict).toBe(
+      "unverifiable",
+    );
+    h.state.handler = () => ({ status: 403, headers: { "x-deny-reason": "backend_denied" } });
+    expect((await plain("http://dvr.bozz.test/gin-x/index.m3u8")).verdict).toBe("unverifiable");
   });
 
   it("calls a refused connection dead and a timeout unverifiable", async () => {

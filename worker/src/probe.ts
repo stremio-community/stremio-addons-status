@@ -592,7 +592,7 @@ function judgeStreamFetch(
     ...streams.filter((c): c is Placeholder => c.kind === "placeholder"),
     ...(pageNotice ? [pageNotice] : []),
   ]);
-  const unplayable = playable > 0 ? urlFailure(v) : undefined;
+  const checked = playable > 0 ? urlOutcome(v) : undefined;
   let outcome: StreamOutcome =
     playable > 0
       ? "content"
@@ -607,24 +607,23 @@ function judgeStreamFetch(
     total === 0
       ? "no streams"
       : `${playable} playable${links > 0 ? `, ${plural(links, "link")}` : ""} of ${total}`;
-  if (unplayable) {
-    outcome = "dead";
-    summary = unplayable.summary;
+  if (checked) {
+    outcome = checked.outcome;
+    summary = checked.summary;
     playable = 0;
     notice = undefined;
   }
-  const reason =
-    outcome === "dead"
-      ? unplayable!.reason
-      : outcome === "links"
-        ? "only links, no playable stream"
-        : outcome === "placeholder"
-          ? noticeReason(notice!)
-          : outcome === "empty"
-            ? total === 0
-              ? "returned no streams"
-              : `none of ${total} streams has a playable source`
-            : undefined;
+  const reason = checked
+    ? checked.reason
+    : outcome === "links"
+      ? "only links, no playable stream"
+      : outcome === "placeholder"
+        ? noticeReason(notice!)
+        : outcome === "empty"
+          ? total === 0
+            ? "returned no streams"
+            : `none of ${total} streams has a playable source`
+          : undefined;
   return {
     target: f.target,
     path: f.path,
@@ -639,23 +638,38 @@ function judgeStreamFetch(
   };
 }
 
-/** Why a target's playable streams can't play, judging by its checked URLs. */
-function urlFailure(v: Verification | undefined): { summary: string; reason: string } | undefined {
+/**
+ * What a target's checked URLs make of its playable streams, when none of them plays.
+ * Web pages alone are an informational addon's links (Stremio Stinger); beside a dead URL they are as unplayable.
+ */
+function urlOutcome(
+  v: Verification | undefined,
+): { outcome: "dead" | "links"; summary: string; reason: string } | undefined {
   const urls = v?.urls;
-  if (!urls?.length) return undefined;
-  const dead = urls.filter((u) => u.verdict === "dead");
-  const each = dead.map((u) => `${u.host} ${u.outcome}`).join("; ");
-  if (dead.length === urls.length) {
+  if (!urls?.length || urls.some((u) => u.verdict === "playable")) return undefined;
+  const each = urls.map((u) => `${u.host} ${u.outcome}`).join("; ");
+  const dead = urls.filter((u) => u.verdict === "dead").length;
+  const pages = urls.filter((u) => u.verdict === "webpage").length;
+  if (dead + pages === urls.length) {
+    if (dead === 0) {
+      return {
+        outcome: "links",
+        summary: `${pages} of ${urls.length} URLs web pages`,
+        reason: `stream URLs open web pages, not media: ${each}`,
+      };
+    }
     return {
-      summary: `${dead.length} of ${urls.length} URLs dead`,
-      reason: `every checked stream URL is dead: ${each}`,
+      outcome: "dead",
+      summary: pages === 0 ? `${dead} of ${urls.length} URLs dead` : "no URL plays",
+      reason: `no checked stream URL plays: ${each}`,
     };
   }
   // A template answers for any ID, so only a URL that plays shows this title is real.
-  if (v?.templated?.urls && !urls.some((u) => u.verdict === "playable")) {
+  if (v?.templated?.urls) {
     return {
+      outcome: "dead",
       summary: "templated, no URL plays",
-      reason: `the addon answers a nonexistent ID too, and no checked stream URL plays`,
+      reason: `the addon answers a nonexistent ID too, and no checked stream URL plays: ${each}`,
     };
   }
   return undefined;
@@ -980,6 +994,8 @@ async function verifyStreams(
   f: StreamFetch,
   outcome: "content" | "links",
 ): Promise<Verification> {
+  // Status cards are the same for every title by design, and lead to status pages rather than media.
+  if (ctx.sameStreamsForEveryTitle) return {};
   const raw = f.answer?.data?.streams ?? [];
   const playable = raw.filter((_, i) => f.streams[i]?.kind === "playable");
   const toCheck = outcome === "content" ? urlsToCheck(playable, ctx.base) : [];
@@ -987,11 +1003,9 @@ async function verifyStreams(
   const settledByUrls =
     urls.length === 0 ||
     urls.some((u) => u.verdict === "playable") ||
-    urls.every((u) => u.verdict === "dead");
+    !urls.some((u) => u.verdict === "unverifiable");
   const templated =
-    ctx.sameStreamsForEveryTitle || (outcome === "content" && settledByUrls)
-      ? undefined
-      : await ctx.negativeControl(f);
+    outcome === "content" && settledByUrls ? undefined : await ctx.negativeControl(f);
   const link =
     outcome === "links" && templated?.links
       ? raw.find((s, i) => f.streams[i]?.kind === "link" && isWebLink(s))
