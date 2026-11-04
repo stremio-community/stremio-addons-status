@@ -4,12 +4,13 @@ import { metaBodyDefect, metaDefects, metaFlaws, metasWithout } from "./metas.js
 describe("metaDefects", () => {
   it("counts metas without a name (TorrentFreaks Top-10)", () => {
     const metas = Array.from({ length: 100 }, (_, i) => ({ id: `tt${i}`, type: "movie" }));
-    expect(metaDefects(metas)).toEqual({ invalid: 100, missing: ["name"] });
+    expect(metaDefects(metas)).toEqual({ total: 100, incomplete: 100, missing: ["name"] });
   });
 
-  it("lists every field the invalid metas lack between them", () => {
+  it("lists every field the incomplete metas lack between them", () => {
     expect(metaDefects([{ id: "a", type: "movie", name: "A" }, { type: "movie" }, {}])).toEqual({
-      invalid: 2,
+      total: 3,
+      incomplete: 2,
       missing: ["id", "type", "name"],
     });
   });
@@ -47,8 +48,12 @@ describe("metaBodyDefect", () => {
   });
 
   it("names the fields a wrapped meta lacks, and accepts a complete one", () => {
-    expect(metaBodyDefect({ meta: { id: "a", type: "movie" } })?.reason).toBe("meta missing name");
+    expect(metaBodyDefect({ meta: { name: "A" } })?.reason).toBe("meta missing id, type");
     expect(metaBodyDefect({ meta: { id: "a", type: "movie", name: "A" } })).toBeUndefined();
+  });
+
+  it("accepts a wrapped meta without a name, which Stremio loads untitled", () => {
+    expect(metaBodyDefect({ meta: { id: "tt1", type: "movie" } })).toBeUndefined();
   });
 });
 
@@ -86,6 +91,12 @@ describe("metaFlaws", () => {
       { summary: "no videos", reason: "series meta has no videos" },
     ]);
     expect(metaFlaws({ ...meta, videos: [] }, "series", "tmdb:1413")).toHaveLength(1);
+  });
+
+  it("flags a meta without a name", () => {
+    expect(metaFlaws({ id: "tt1", type: "movie" }, "movie", "tt1")).toEqual([
+      { summary: "without name", reason: "meta has no name" },
+    ]);
   });
 
   it("passes a meta describing the requested title", () => {

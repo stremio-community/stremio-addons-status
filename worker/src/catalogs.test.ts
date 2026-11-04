@@ -52,13 +52,24 @@ describe("coveragePicks", () => {
   });
 });
 
-const items = (type: string, id: string, total: number, invalid = 0): CatalogOutcome => ({
+const items = (type: string, id: string, total: number): CatalogOutcome => ({
   catalog: ref(type, id),
   path: `/catalog/${type}/${id}.json`,
   kind: "items",
   ok: true,
   summary: `${total} metas`,
-  metas: { total, invalid, missing: invalid > 0 ? ["name"] : [] },
+  metas: { total, incomplete: 0, missing: [] },
+});
+const nameless = (
+  type: string,
+  id: string,
+  total: number,
+  incomplete: number,
+  summary: string,
+): CatalogOutcome => ({
+  ...items(type, id, total),
+  summary,
+  metas: { total, incomplete, missing: ["name"] },
 });
 const empty = (type: string, id: string): CatalogOutcome => ({
   catalog: ref(type, id),
@@ -66,16 +77,12 @@ const empty = (type: string, id: string): CatalogOutcome => ({
   kind: "empty",
   ok: false,
   summary: "empty",
-  metas: { total: 0, invalid: 0, missing: [] },
+  metas: { total: 0, incomplete: 0, missing: [] },
 });
 
 describe("catalogCoverage", () => {
   it("names a sibling catalog whose metas lack names (Cartoon Network)", () => {
-    const series: CatalogOutcome = {
-      ...empty("series", "cartoon_network_series"),
-      summary: "invalid (20 metas without name)",
-      metas: { total: 20, invalid: 20, missing: ["name"] },
-    };
+    const series = nameless("series", "cartoon_network_series", 20, 20, "20 metas without name");
     const r = catalogCoverage([items("movie", "cartoon_network_movie", 20), series]);
     expect(r).toEqual({
       resource: "catalogs",
@@ -85,7 +92,7 @@ describe("catalogCoverage", () => {
         { label: "Catalog", value: "/catalog/movie/cartoon_network_movie.json · 20 metas" },
         {
           label: "Catalog",
-          value: "/catalog/series/cartoon_network_series.json · invalid (20 metas without name)",
+          value: "/catalog/series/cartoon_network_series.json · 20 metas without name",
         },
       ],
     });
@@ -96,12 +103,12 @@ describe("catalogCoverage", () => {
       items("movie", "eporner", 65),
       empty("movie", "spankbang"),
       empty("movie", "missav"),
-      items("movie", "xhamster.hd+", 51, 39),
+      nameless("movie", "xhamster.hd+", 51, 39, "39 of 51 metas without name"),
     ]);
     expect(r?.summary).toBe("1 of 4 OK · spankbang empty, missav empty, xhamster.hd+ without name");
     expect(r?.details[3]).toEqual({
       label: "Catalog",
-      value: "/catalog/movie/xhamster.hd+.json · 51 metas · 39 of 51 metas without name",
+      value: "/catalog/movie/xhamster.hd+.json · 39 of 51 metas without name",
     });
   });
 
@@ -130,7 +137,7 @@ describe("catalogCoverage", () => {
       kind: "notices",
       ok: true,
       summary: "only notices",
-      metas: { total: 1, invalid: 0, missing: [] },
+      metas: { total: 1, incomplete: 0, missing: [] },
     });
     const r = catalogCoverage([
       notices("movie", "tpbctlg-movies"),

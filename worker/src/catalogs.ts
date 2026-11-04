@@ -1,4 +1,4 @@
-import { metasWithout } from "./metas.js";
+import type { MetaCounts } from "./metas.js";
 import type { DetailRow, PerResourceResult } from "./types.js";
 import { plural } from "./utils.js";
 
@@ -20,7 +20,7 @@ export interface CatalogOutcome {
   kind: "items" | "notices" | "empty" | "failed";
   ok: boolean;
   summary: string;
-  metas?: { total: number; invalid: number; missing: string[] };
+  metas?: MetaCounts;
 }
 
 function keyOf(c: CatalogRef): string {
@@ -74,20 +74,15 @@ function bestPerCatalog<T extends CatalogOutcome>(outcomes: readonly T[]): T[] {
 
 /** What is wrong with a catalog a user browses, in a word or two, or undefined when nothing is. */
 export function catalogProblem(o: CatalogOutcome): string | undefined {
-  const invalid = o.metas?.invalid ?? 0;
+  const lacking = o.metas?.incomplete ? `without ${o.metas.missing.join(", ")}` : undefined;
   if (o.kind === "failed") return o.summary;
-  if (o.kind === "empty") return invalid > 0 ? `without ${o.metas!.missing.join(", ")}` : "empty";
+  if (o.kind === "empty") return lacking ?? "empty";
   if (o.kind === "notices") return "only notices";
-  return invalid > 0 ? `without ${o.metas!.missing.join(", ")}` : undefined;
+  return lacking;
 }
 
 function rowOf(o: CatalogOutcome): DetailRow {
-  const m = o.metas;
-  const defects =
-    o.kind === "items" && m && m.invalid > 0
-      ? ` · ${metasWithout(m.invalid, m.total, m.missing)}`
-      : "";
-  return { label: "Catalog", value: `${o.path} · ${o.summary}${defects}` };
+  return { label: "Catalog", value: `${o.path} · ${o.summary}` };
 }
 
 /**
