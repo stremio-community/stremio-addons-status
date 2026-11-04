@@ -160,6 +160,27 @@ describe("classifyStream", () => {
     [{ externalUrl: "https://www.google.com/search?q=x", title: "🔍 Search Google" }, "no-content"],
     [{ externalUrl: "https://buymeacoffee.com/x", title: "Support" }, "no-content"],
     [{ externalUrl: "https://x.test", title: "[INFO] Something" }, "no-content"],
+    [
+      {
+        name: "Tvvio",
+        title:
+          "❤️ AJUDE O PROJETO! 🎁 Gostou do addon? 💚 Dê seu apoio pelo LivePix! ✨ Qualquer valor ajuda! 💡 Sugestões ou críticas? 📩 Mande para nós!",
+        externalUrl: "https://livepix.test/tvvio",
+      },
+      "no-content",
+    ],
+    [
+      {
+        name: "⚠ Sensitivity Notes",
+        description: "Could not reach DoesTheDogDie right now — tap to open the site.",
+        externalUrl: "https://www.doesthedogdie.test",
+      },
+      "no-content",
+    ],
+    [
+      { externalUrl: "https://x.test", title: "Unable to fetch ratings, try again later" },
+      "no-content",
+    ],
   ])("detects the placeholder %j as %s", (stream, kind) => {
     const c = classify(stream);
     expect(c.kind).toBe("placeholder");

@@ -3908,6 +3908,37 @@ describe("probe stream URL checks", () => {
       expect(r.success).toBe(true);
     });
 
+    it("does not take a lookup-failure card for a nonexistent ID as a template (Sensitivity Notes)", async () => {
+      let opened = 0;
+      urlcheckMock.followLink = async (url) => {
+        opened++;
+        return { host: new URL(url).hostname, status: 403, label: "Just a moment..." };
+      };
+      const { r, asked } = await probeTemplated((_type, id) =>
+        id.startsWith("tt9999999999")
+          ? [
+              {
+                name: "⚠ Sensitivity Notes",
+                description: "Could not reach DoesTheDogDie right now — tap to open the site.",
+                externalUrl: "https://www.doesthedogdie.test",
+              },
+            ]
+          : [
+              {
+                name: "⚠ Sensitivity Notes · 20 flags",
+                description: `a dog dies · ${id}`,
+                externalUrl: `https://www.doesthedogdie.test/media/${id}`,
+              },
+            ],
+      );
+      expect(asked).toContain("tt9999999999");
+      expect(r.success).toBe(true);
+      expect(opened).toBe(0);
+      expect(streamOf(r)?.details).not.toContainEqual(
+        expect.objectContaining({ value: expect.stringMatching(/^templated/) }),
+      );
+    });
+
     it("annotates templated links, and opens one to read what its page says (MoviesInDetail)", async () => {
       const opened: string[] = [];
       urlcheckMock.followLink = async (url) => {

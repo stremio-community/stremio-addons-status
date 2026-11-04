@@ -93,6 +93,8 @@ const PLACEHOLDER_PATTERNS: ReadonlyArray<readonly [PlaceholderKind, RegExp]> = 
         String.raw`nėra šaltinių`,
         String.raw`\bsin resultados\b`,
         String.raw`\bdonat|\bsostieni\b|buymeacoffee|buy me a coffee|ko-fi\.com|patreon\.com`,
+        String.raw`\bajude o projeto\b|livepix`,
+        String.raw`\b(could not|couldn't|unable to) (reach|connect|fetch|load)\b|\btry again later\b`,
         String.raw`\btap to update\b|\bupdate your install|\bnew version\b|\bv\d+(\.\d+)* available\b`,
         String.raw`\bsearch (on )?(google|youtube)\b`,
         String.raw`\[info\]`,
