@@ -123,6 +123,23 @@ describe("catalogCoverage", () => {
     expect(r?.details).toHaveLength(6);
   });
 
+  it("names a catalog of only notices, even one whose notices are mere noise (ThePirateBay Catalog)", () => {
+    const notices = (type: string, id: string): CatalogOutcome => ({
+      catalog: ref(type, id),
+      path: `/catalog/${type}/${id}.json`,
+      kind: "notices",
+      ok: true,
+      summary: "only notices",
+      metas: { total: 1, invalid: 0, missing: [] },
+    });
+    const r = catalogCoverage([
+      notices("movie", "tpbctlg-movies"),
+      notices("series", "tpbctlg-series"),
+      items("series", "TV shows", 100),
+    ]);
+    expect(r?.summary).toBe("1 of 3 OK · tpbctlg-movies only notices, tpbctlg-series only notices");
+  });
+
   it("says nothing about a single catalog, and passes when all are fine", () => {
     expect(catalogCoverage([items("movie", "a", 5)])).toBeUndefined();
     expect(catalogCoverage([items("movie", "a", 5), items("series", "b", 5)])).toMatchObject({

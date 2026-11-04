@@ -77,7 +77,7 @@ export function catalogProblem(o: CatalogOutcome): string | undefined {
   const invalid = o.metas?.invalid ?? 0;
   if (o.kind === "failed") return o.summary;
   if (o.kind === "empty") return invalid > 0 ? `without ${o.metas!.missing.join(", ")}` : "empty";
-  if (o.kind === "notices" && !o.ok) return "only notices";
+  if (o.kind === "notices") return "only notices";
   return invalid > 0 ? `without ${o.metas!.missing.join(", ")}` : undefined;
 }
 
@@ -91,7 +91,7 @@ function rowOf(o: CatalogOutcome): DetailRow {
 }
 
 /**
- * An informational `N of M OK` over every catalog checked, naming the ones a user would find broken: failing, empty, or listing metas Stremio can't title.
+ * An informational `N of M OK` over every catalog checked, naming the ones a user would find broken: failing, empty, holding only notices, or listing metas Stremio can't title.
  * Nothing when fewer than two catalogs were checked, since the catalog condition already tells about the one.
  */
 export function catalogCoverage(
