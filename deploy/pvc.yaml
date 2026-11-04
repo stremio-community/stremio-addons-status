@@ -1,0 +1,12 @@
+---
+# Gatus deletes the history of every endpoint missing from the configuration it starts with, so the worker's endpoints file must outlive the pod.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: stremio-addons-status-config
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 64Mi
