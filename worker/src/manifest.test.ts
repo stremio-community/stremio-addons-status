@@ -129,6 +129,23 @@ describe("declaredConfigRequirement", () => {
     expect(declaredConfigRequirement(m)).toBe("manifest requires setting username");
   });
 
+  it("counts a required setting the listed URL already carries as filled in (WLATINO)", () => {
+    const m = {
+      ...manifest({}),
+      config: [{ key: "access_email", type: "text", required: true }],
+    } as Manifest;
+    const encoded = Buffer.from(JSON.stringify({ access_email: "someone@example.org" })).toString(
+      "base64",
+    );
+    expect(declaredConfigRequirement(m, `https://addon.test/${encoded}`)).toBeUndefined();
+    expect(
+      declaredConfigRequirement(m, `https://addon.test/access_email=someone%40example.org`),
+    ).toBeUndefined();
+    expect(declaredConfigRequirement(m, "https://addon.test")).toBe(
+      "manifest requires setting access_email",
+    );
+  });
+
   it("is undefined for an addon that only offers configuration (Statusio)", () => {
     const m = {
       ...manifest({ behaviorHints: { configurable: true, configurationRequired: false } }),

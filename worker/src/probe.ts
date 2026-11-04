@@ -547,7 +547,9 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
 
   // Step 2: Discovery / early needs-config.
   if (override?.needsConfig) return needsConfiguration(override.needsConfig);
-  const declared = override?.testConfig ? undefined : declaredConfigRequirement(live);
+  const declared = override?.testConfig
+    ? undefined
+    : declaredConfigRequirement(live, addon.baseUrl);
   if (declared) return needsConfiguration(declared);
 
   const streamRes = norm.find((r) => r.name === "stream");
@@ -1003,7 +1005,7 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
       : primary === "catalog"
         ? catalogChecks.map((c) => c.answer)
         : [metaAnswer];
-  const unconfigured = unconfiguredReason(live, primaryAnswers, manifestAttempts);
+  const unconfigured = await unconfiguredReason(live, primaryAnswers, manifestAttempts, base);
   if (unconfigured) return needsConfiguration(unconfigured);
 
   // Manifest up but primary content failed.

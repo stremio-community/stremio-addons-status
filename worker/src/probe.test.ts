@@ -1448,6 +1448,11 @@ describe("probe needs-configuration", () => {
     },
   };
 
+  const CONFIGURE_PAGE: RouteResult = {
+    ...HTML_PAGE,
+    parseError: { ...HTML_PAGE.parseError!, title: "Configure" },
+  };
+
   const scraper = (manifest: Partial<Manifest> = {}) => {
     idsourcesMock.hasSourceFor = () => true;
     idsourcesMock.resolveForPrefixes = async () => [
@@ -1488,6 +1493,7 @@ describe("probe needs-configuration", () => {
     router = routes([
       ["/manifest.json", manifestOk(m.manifest)],
       ["/stream/", CANNOT_GET],
+      ["/configure", CONFIGURE_PAGE],
     ]);
     const r = await probe(m);
     expect(r.success).toBe(true);
@@ -1533,6 +1539,7 @@ describe("probe needs-configuration", () => {
         { ...manifestOk(m.manifest), attempts: [{ route: "WARP", status: 200, durationMs: 1 }] },
       ],
       ["/stream/", forbidden],
+      ["/configure", CONFIGURE_PAGE],
     ]);
     const r = await probe(m);
     expect(r.detail.mode).toBe("needs-config");
@@ -1549,9 +1556,21 @@ describe("probe needs-configuration", () => {
     router = routes([
       ["/manifest.json", manifestOk(m.manifest)],
       ["/catalog/", { status: 404, data: { detail: "Not Found" } }],
+      ["/configure", CONFIGURE_PAGE],
     ]);
     const r = await probe(m);
     expect(r.detail.mode).toBe("needs-config");
+  });
+
+  it("keeps a missing route DOWN when the configure page leads to another site (TOP Posters Addon Wrapper)", async () => {
+    const m = scraper({ behaviorHints: { configurable: true } });
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      ["/stream/", { status: 404, data: { detail: "Not Found" } }],
+      ["/configure", { ...CONFIGURE_PAGE, redirect: "api.top-posters.test → top-posters.test" }],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(false);
   });
 
   it("lets a needsConfig pin win without asking for content (Kast Alldebrid)", async () => {

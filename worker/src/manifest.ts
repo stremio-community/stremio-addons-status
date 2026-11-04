@@ -70,16 +70,32 @@ export function requiredConfigKeys(m: Manifest): string[] {
   });
 }
 
+/** The listed URL's path segments as text, plain and base64-decoded, where an installed config keeps its settings. */
+function pathTexts(baseUrl: string): string[] {
+  const segments = (URL.parse(baseUrl)?.pathname ?? "").split("/").filter(Boolean);
+  return segments.flatMap((segment) => {
+    let text = segment;
+    try {
+      text = decodeURIComponent(segment);
+    } catch {
+      /* keep the raw segment */
+    }
+    return [text, Buffer.from(segment, "base64").toString("utf8")];
+  });
+}
+
 /**
  * Why the manifest itself says it serves nothing until configured, or undefined when it doesn't.
  * Stremio reads only `behaviorHints.configurationRequired`, but a root-level flag or a required setting states the same intent.
+ * SDK addons declare their settings on configured installs too, so a required setting the listed URL's path already names counts as filled in.
  */
-export function declaredConfigRequirement(m: Manifest): string | undefined {
+export function declaredConfigRequirement(m: Manifest, baseUrl = ""): string | undefined {
   const root = m as { configurationRequired?: unknown };
   if (m.behaviorHints?.configurationRequired === true || root.configurationRequired === true) {
     return "manifest sets configurationRequired";
   }
-  const keys = requiredConfigKeys(m);
+  const texts = pathTexts(baseUrl);
+  const keys = requiredConfigKeys(m).filter((key) => !texts.some((t) => t.includes(key)));
   return keys.length > 0 ? `manifest requires setting ${keys.join(", ")}` : undefined;
 }
 

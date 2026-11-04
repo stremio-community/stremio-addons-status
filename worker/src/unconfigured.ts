@@ -1,5 +1,6 @@
 import type { Manifest } from "@stremio-addon/sdk";
-import type { Attempt, ParseError } from "./http.js";
+import { config } from "./config.js";
+import { getJson, type Attempt, type ParseError } from "./http.js";
 import { invitesConfiguration } from "./manifest.js";
 
 /** What a content request answered, as much as telling a route that isn't mounted from one that fails needs. */
@@ -43,18 +44,33 @@ export function missingRouteStatus(
 }
 
 /**
+ * Whether the addon's own `/configure` page, the one Stremio's configure button opens, loads on the addon's host.
+ * Without it a user can't configure the addon either, so a dead backend or a URL that is someone's personal install doesn't pass as merely unconfigured.
+ */
+export async function servesConfigurePage(baseUrl: string): Promise<boolean> {
+  try {
+    const { status, attempts } = await getJson(`${baseUrl}/configure`, config.timeouts.manifest);
+    return status >= 200 && status < 300 && !attempts.at(-1)?.redirect;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Why an addon whose primary content failed most likely only needs configuring, or undefined when its failure suggests no such thing.
  * The listing often carries the bare URL of an addon whose content routes exist only under the config path its configure page generates.
- * It takes a configurable manifest and every primary request failing like a missing route: a configurable addon answering empty can be genuinely broken.
+ * It takes a configurable manifest, every primary request failing like a missing route, and a configure page that loads: a configurable addon answering empty can be genuinely broken.
  */
-export function unconfiguredReason(
+export async function unconfiguredReason(
   manifest: Manifest,
   answers: ReadonlyArray<ContentAnswer | undefined>,
   manifestAttempts: readonly Attempt[],
-): string | undefined {
+  baseUrl: string,
+): Promise<string | undefined> {
   if (answers.length === 0 || !invitesConfiguration(manifest)) return undefined;
   const statuses = answers.map((a) => missingRouteStatus(a, manifestAttempts));
   if (statuses.some((s) => s === undefined)) return undefined;
+  if (!(await servesConfigurePage(baseUrl))) return undefined;
   const shown = [...new Set(statuses)].map((s) => `HTTP ${s}`).join(", ");
   return `unconfigured content routes answer ${shown}`;
 }

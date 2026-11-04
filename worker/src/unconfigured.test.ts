@@ -1,7 +1,18 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { Manifest } from "@stremio-addon/sdk";
-import type { Attempt, ParseError } from "./http.js";
-import { missingRouteStatus, unconfiguredReason, type ContentAnswer } from "./unconfigured.js";
+import type { Attempt, JsonResult, ParseError } from "./http.js";
+
+let configurePage: JsonResult<unknown> | Error;
+
+vi.mock("./http.js", () => ({
+  getJson: async () => {
+    if (configurePage instanceof Error) throw configurePage;
+    return configurePage;
+  },
+}));
+
+const { missingRouteStatus, unconfiguredReason } = await import("./unconfigured.js");
+type ContentAnswer = import("./unconfigured.js").ContentAnswer;
 
 const configurable = {
   id: "x",
@@ -96,26 +107,70 @@ describe("missingRouteStatus", () => {
 });
 
 describe("unconfiguredReason", () => {
-  it("names the status when every primary request missed a route on a configurable addon", () => {
+  const BASE = "https://addon.test";
+  const CONFIGURE_PAGE: JsonResult<unknown> = {
+    status: 200,
+    data: undefined,
+    parseError: {
+      html: true,
+      contentType: "text/html",
+      title: "Configure",
+      excerpt: "<!DOCTYPE html>",
+    },
+    attempts: [attempt("WARP", 200)],
+  };
+
+  it("names the status when every primary request missed a route on a configurable addon", async () => {
+    configurePage = CONFIGURE_PAGE;
     expect(
-      unconfiguredReason(configurable, [expressCannotGet, expressCannotGet], manifestOverWarp),
+      await unconfiguredReason(
+        configurable,
+        [expressCannotGet, expressCannotGet],
+        manifestOverWarp,
+        BASE,
+      ),
     ).toBe("unconfigured content routes answer HTTP 404");
   });
 
-  it("needs every request to miss a route", () => {
+  it("needs every request to miss a route", async () => {
+    configurePage = CONFIGURE_PAGE;
     const empty: ContentAnswer = {
       status: 200,
       data: { streams: [] },
       attempts: [attempt("WARP", 200)],
     };
     expect(
-      unconfiguredReason(configurable, [expressCannotGet, empty], manifestOverWarp),
+      await unconfiguredReason(configurable, [expressCannotGet, empty], manifestOverWarp, BASE),
     ).toBeUndefined();
-    expect(unconfiguredReason(configurable, [], manifestOverWarp)).toBeUndefined();
+    expect(await unconfiguredReason(configurable, [], manifestOverWarp, BASE)).toBeUndefined();
   });
 
-  it("needs a manifest that offers configuration (40th PROJECT's static 404s)", () => {
+  it("needs a manifest that offers configuration (40th PROJECT's static 404s)", async () => {
+    configurePage = CONFIGURE_PAGE;
     const plain = { ...configurable, behaviorHints: {} } as Manifest;
-    expect(unconfiguredReason(plain, [expressCannotGet], manifestOverWarp)).toBeUndefined();
+    expect(
+      await unconfiguredReason(plain, [expressCannotGet], manifestOverWarp, BASE),
+    ).toBeUndefined();
+  });
+
+  it("needs a configure page on the addon's own host (Easynews while its backend timed out)", async () => {
+    configurePage = { ...CONFIGURE_PAGE, status: 504, attempts: [attempt("WARP", 504)] };
+    expect(
+      await unconfiguredReason(configurable, [expressCannotGet], manifestOverWarp, BASE),
+    ).toBeUndefined();
+    configurePage = new Error("fetch failed");
+    expect(
+      await unconfiguredReason(configurable, [expressCannotGet], manifestOverWarp, BASE),
+    ).toBeUndefined();
+  });
+
+  it("doesn't take a configure link leading to another site (TOP Posters' personal wrapper URL)", async () => {
+    configurePage = {
+      ...CONFIGURE_PAGE,
+      attempts: [{ ...attempt("WARP", 200), redirect: "api.top-posters.com → top-posters.com" }],
+    };
+    expect(
+      await unconfiguredReason(configurable, [expressCannotGet], manifestOverWarp, BASE),
+    ).toBeUndefined();
   });
 });
