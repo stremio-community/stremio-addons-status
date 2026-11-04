@@ -19,6 +19,8 @@ The running Gatus only reflects `../gatus` edits when built from it via `compose
   Discord alerts also show the rows whose label is in `detail-labels` (`gatus/config.d/00-base.yaml`), so renaming one of those labels in `probe.ts` silently drops it from alerts.
 - Everything pushed to Gatus is public, and a configured addon's base URL can carry its config or API key: never push it, only paths relative to it (`buildConditions` strips it as a backstop).
   The manifest logo, pushed for the Discord alert thumbnail, is dropped whenever it holds any segment of the base URL's path (`logoOf`).
+- `worker/src/overrides.ts` holds curated per-addon probe settings keyed by uuid: needs-config pins, fixed test IDs and secret-free test configs.
+  The file is public like everything else in the repo, so it holds no secret, user config or configured base URL; a test config is only requested, never pushed (`buildConditions` strips the probed base URL too).
 - Group order is encoded as leading spaces on group names (`GROUP_ORDER` in `gatus.ts`); the static groups in `gatus/config.d/00-base.yaml` hardcode matching counts.
   Gatus stores an endpoint's group only when it first sees the key, so changing a count also needs a one-time `UPDATE endpoints SET endpoint_group = ...` in Postgres, or existing endpoints keep the old prefix and new ones split into a duplicate group.
 
@@ -30,6 +32,7 @@ The point of the worker is to avoid false DOWNs. Preserve these when editing `pr
 - An addon is unreachable only when both the WARP proxy and the direct route fail.
 - A missing test ID (e.g. an external ID-source outage) degrades to liveness-only or an annotation, never to DOWN.
 - A placeholder (a configure plea, a notice, a stream identical for unrelated titles) never counts as content; an addon answering only pleas to configure is needs-config, not DOWN.
+- A configurable addon is needs-config, not DOWN, when its manifest declares required configuration or its primary content routes are missing without a config (`unconfigured.ts`); an empty answer alone never makes it needs-config, and an override's `needsConfig` pin wins over any content verdict.
 
 ## Production
 
