@@ -17,7 +17,12 @@ import {
 } from "./http.js";
 import { encodeId, errMsg, plural } from "./utils.js";
 import { corsAnnotation, STREMIO_WEB_HEADERS } from "./cors.js";
-import { catalogCoverage, coveragePicks } from "./catalogs.js";
+import {
+  catalogCoverage,
+  coveragePicks,
+  hasInstallableAddon,
+  judgeAddonCatalog,
+} from "./catalogs.js";
 import {
   metaBodyDefect,
   metaDefects,
@@ -939,6 +944,53 @@ async function coverCatalogs(
   return [...covered, ...fresh.flat()];
 }
 
+/** The first addon catalog's answer: it passes when it lists an addon Stremio could install. */
+async function checkAddonCatalog(
+  base: string,
+  catalog: ManifestCatalog,
+  decides: boolean,
+): Promise<{ result: PerResourceResult; answer?: ContentAnswer; deciding?: Timing }> {
+  const path = `/addon_catalog/${encodeId(catalog.type)}/${encodeId(catalog.id)}.json`;
+  try {
+    const answer = await getJson<unknown>(
+      base + path,
+      config.timeouts.catalog,
+      decides ? deciding(hasInstallableAddon) : {},
+    );
+    const { status, parseError, attempts } = answer;
+    const unparsed = isOkStatus(status) ? parseError : undefined;
+    const judged = !isOkStatus(status)
+      ? { ok: false, ...describeStatus(answer) }
+      : unparsed
+        ? { ok: false, ...describeParseError(unparsed) }
+        : judgeAddonCatalog(answer.data);
+    return {
+      answer,
+      result: {
+        resource: "addon_catalog",
+        ok: judged.ok,
+        summary: judged.summary,
+        details: requestRows(path, attempts, {
+          reason: judged.reason,
+          parseError: unparsed,
+          note: softBlockNote(answer),
+        }),
+      },
+      ...(judged.ok ? { deciding: { path, ms: answerTime(answer) } } : {}),
+    };
+  } catch (e) {
+    const { summary, reason } = describeRequestError(e);
+    return {
+      result: {
+        resource: "addon_catalog",
+        ok: false,
+        summary,
+        details: requestRows(path, attemptsOf(e), { reason }),
+      },
+    };
+  }
+}
+
 /** A check's row in the stream condition: its deciding request in full, and every other ID tried for the same type in one row each. */
 interface StreamRow {
   label: string;
@@ -1122,17 +1174,22 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
   const streamRes = norm.find((r) => r.name === "stream");
   const metaRes = norm.find((r) => r.name === "meta");
   const subtitlesRes = norm.find((r) => r.name === "subtitles");
+  const addonCatalogs = Array.isArray(live.addonCatalogs)
+    ? live.addonCatalogs.filter((c) => typeof c?.type === "string" && typeof c.id === "string")
+    : [];
   // Stremio reads catalogs from `manifest.catalogs` alone, whether or not `resources` lists `catalog`.
   const plans = catalogPlans(catalogs);
 
-  // Primary content resource: stream > catalog > meta.
-  let primary: "stream" | "catalog" | "meta" | null = streamRes
+  // Primary content resource: stream > catalog > meta > addon_catalog.
+  let primary: "stream" | "catalog" | "meta" | "addon_catalog" | null = streamRes
     ? "stream"
     : catalogs.length > 0
       ? "catalog"
       : metaRes
         ? "meta"
-        : null;
+        : addonCatalogs.length > 0
+          ? "addon_catalog"
+          : null;
 
   if (!primary) return livenessOnly("no testable resource");
   log.debug({ step: "discovery", primary, catalogs: plans.length }, `primary resource: ${primary}`);
@@ -1504,6 +1561,16 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
     }
   }
 
+  let addonCatalogAnswer: ContentAnswer | undefined;
+  let addonCatalogDeciding: Timing[] = [];
+  if (addonCatalogs.length > 0) {
+    const checked = await checkAddonCatalog(base, addonCatalogs[0], primary === "addon_catalog");
+    perResource.push(checked.result);
+    addonCatalogAnswer = checked.answer;
+    addonCatalogDeciding = checked.deciding ? [checked.deciding] : [];
+    log.debug({ step: "addon_catalog", ok: checked.result.ok }, "addon catalog check");
+  }
+
   // Secondary resources: shape-only, annotate, never flip DOWN.
   if (subtitlesRes) {
     const pool = [
@@ -1559,7 +1626,9 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
         ? streamDeciding
         : primary === "catalog"
           ? walks.flatMap((w) => w.deciding ?? [])
-          : metaDeciding,
+          : primary === "meta"
+            ? metaDeciding
+            : addonCatalogDeciding,
     );
   }
   const okResources = perResource.filter((r) => r.ok);
@@ -1595,7 +1664,9 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
       ? streamAnswers
       : primary === "catalog"
         ? attempts.map((a) => a.answer)
-        : [metaAnswer];
+        : primary === "meta"
+          ? [metaAnswer]
+          : [addonCatalogAnswer];
   const unconfigured = await unconfiguredReason(live, primaryAnswers, manifestAttempts, base);
   if (unconfigured) return needsConfiguration(unconfigured);
 

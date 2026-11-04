@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   catalogCoverage,
   coveragePicks,
+  hasInstallableAddon,
+  judgeAddonCatalog,
   type CatalogOutcome,
   type CatalogRef,
 } from "./catalogs.js";
@@ -118,5 +120,42 @@ describe("catalogCoverage", () => {
       ok: true,
       summary: "2 of 2 OK",
     });
+  });
+});
+
+/** The first entry of stremio-addons.net's addon catalog, trimmed. */
+const BRAZUCA = {
+  transportUrl: "https://brazuca.test/manifest.json",
+  transportName: "http",
+  manifest: { id: "community.brazuca-play", name: "Brazuca Play", version: "1.0.0" },
+};
+
+describe("judgeAddonCatalog", () => {
+  it("passes a list of installable addons (stremio-addons.net)", () => {
+    const data = { addons: Array.from({ length: 750 }, () => BRAZUCA) };
+    expect(hasInstallableAddon(data)).toBe(true);
+    expect(judgeAddonCatalog(data)).toEqual({ ok: true, summary: "750 addons" });
+  });
+
+  it("counts the installable ones when some entries lack a manifest", () => {
+    const data = { addons: [BRAZUCA, { transportUrl: BRAZUCA.transportUrl }] };
+    expect(judgeAddonCatalog(data)).toEqual({ ok: true, summary: "1 of 2 addons installable" });
+  });
+
+  it("fails an empty list, a list of bare URLs and a body without addons", () => {
+    expect(judgeAddonCatalog({ addons: [] })).toEqual({
+      ok: false,
+      summary: "empty",
+      reason: "returned no addons",
+    });
+    expect(
+      judgeAddonCatalog({ addons: [{ transportUrl: "https://a.test/manifest.json" }] }),
+    ).toEqual({
+      ok: false,
+      summary: "invalid (1 addon without transportUrl or manifest)",
+      reason: "none of 1 addons has a transportUrl and a manifest",
+    });
+    expect(judgeAddonCatalog({ metas: [] })).toMatchObject({ ok: false, summary: "invalid" });
+    expect(hasInstallableAddon(null)).toBe(false);
   });
 });

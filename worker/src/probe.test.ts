@@ -2751,6 +2751,78 @@ describe("probe catalog coverage", () => {
   });
 });
 
+describe("probe addon catalogs", () => {
+  /** stremio-addons.net's manifest, trimmed. */
+  const listing = () =>
+    addon({
+      id: "community.stremio.stremio-addons-dot-net",
+      types: ["movie", "series", "channel", "tv"],
+      resources: ["addon_catalog"],
+      catalogs: [],
+      addonCatalogs: [{ type: "all", id: "stremio-addons.net", name: "stremio-addons.net" }],
+    });
+  const entry = {
+    transportUrl: "https://brazuca.test/manifest.json",
+    transportName: "http",
+    manifest: { id: "community.brazuca-play", name: "Brazuca Play", version: "1.0.0" },
+  };
+
+  it("content-checks an addon whose only resource is addon_catalog (stremio-addons.net)", async () => {
+    const m = listing();
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/addon_catalog/all/stremio-addons.net.json",
+        { status: 200, data: { addons: Array.from({ length: 750 }, () => entry) } },
+      ],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(r.detail.mode).toBe("content");
+    expect(r.detail.primary).toBe("addon_catalog");
+    expect(r.message).toBe("addon_catalog: 750 addons");
+    expect(requestOptions.get(`${BASE}/addon_catalog/all/stremio-addons.net.json`)).toMatchObject({
+      retry: true,
+    });
+  });
+
+  it("is DOWN when the addon catalog lists no addons", async () => {
+    const m = listing();
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      ["/addon_catalog/all/stremio-addons.net.json", { status: 200, data: { addons: [] } }],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(false);
+    expect(r.error).toBe("addon_catalog");
+    expect(r.message).toBe("manifest up · addon_catalog: empty");
+  });
+
+  it("only annotates an addon catalog next to a primary resource", async () => {
+    const m = addon({
+      types: ["movie"],
+      resources: ["catalog", "addon_catalog"],
+      catalogs: [{ type: "movie", id: "top", name: "Top" }],
+      addonCatalogs: [{ type: "all", id: "mine", name: "Mine" }],
+    });
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/catalog/movie/top.json",
+        { status: 200, data: { metas: [{ id: "x:1", type: "movie", name: "X" }] } },
+      ],
+      ["/addon_catalog/all/mine.json", { status: 404, data: undefined }],
+    ]);
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(r.detail.primary).toBe("catalog");
+    expect(r.detail.perResource.find((p) => p.resource === "addon_catalog")).toMatchObject({
+      ok: false,
+      summary: "HTTP 404",
+    });
+  });
+});
+
 describe("probe catalog order and notices per title", () => {
   it("alternates catalog sources, so one failing backend doesn't use up every try (Latanime)", async () => {
     const m = addon({

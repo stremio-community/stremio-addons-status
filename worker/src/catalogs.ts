@@ -1,5 +1,6 @@
 import { metasWithout } from "./metas.js";
 import type { DetailRow, PerResourceResult } from "./types.js";
+import { plural } from "./utils.js";
 
 /** Catalogs checked per addon besides those its primary check already fetched: enough to reach every type a typical addon declares. */
 export const MAX_COVERAGE_FETCHES = 4;
@@ -110,5 +111,53 @@ export function catalogCoverage(
     ok: problems.length === 0,
     summary: `${ok} of ${catalogs.length} OK${problems.length > 0 ? ` · ${problems.join(", ")}` : ""}`,
     details: catalogs.map(rowOf),
+  };
+}
+
+/** How an addon catalog answer fares: `reason` is set whenever it isn't `ok`. */
+export interface AddonCatalogJudgement {
+  ok: boolean;
+  summary: string;
+  reason?: string;
+}
+
+function isInstallable(entry: unknown): boolean {
+  const e = entry as { transportUrl?: unknown; manifest?: unknown } | null;
+  return (
+    typeof e?.transportUrl === "string" &&
+    e.transportUrl !== "" &&
+    e.manifest !== null &&
+    typeof e.manifest === "object" &&
+    !Array.isArray(e.manifest)
+  );
+}
+
+/** Whether an addon catalog answer lists an addon Stremio could install: one with a transport URL and its manifest. */
+export function hasInstallableAddon(data: unknown): boolean {
+  const addons = (data as { addons?: unknown } | null)?.addons;
+  return Array.isArray(addons) && addons.some(isInstallable);
+}
+
+/** Judge a parsed 2xx `/addon_catalog/…` answer: it passes when it lists at least one installable addon. */
+export function judgeAddonCatalog(data: unknown): AddonCatalogJudgement {
+  const addons = (data as { addons?: unknown } | null)?.addons;
+  if (!Array.isArray(addons)) {
+    return { ok: false, summary: "invalid", reason: "response has no addons array" };
+  }
+  if (addons.length === 0) return { ok: false, summary: "empty", reason: "returned no addons" };
+  const installable = addons.filter(isInstallable).length;
+  if (installable === 0) {
+    return {
+      ok: false,
+      summary: `invalid (${plural(addons.length, "addon")} without transportUrl or manifest)`,
+      reason: `none of ${addons.length} addons has a transportUrl and a manifest`,
+    };
+  }
+  return {
+    ok: true,
+    summary:
+      installable === addons.length
+        ? plural(addons.length, "addon")
+        : `${installable} of ${plural(addons.length, "addon")} installable`,
   };
 }
