@@ -2598,3 +2598,68 @@ describe("probe catalog order and notices per title", () => {
     expect(r.detail.mode).toBe("content");
   });
 });
+
+describe("probe catalog titles as Stremio opens them", () => {
+  it("streams a title without videos under its catalog ID even when its meta names itself differently (StremTV US)", async () => {
+    const m = addon({
+      types: ["tv"],
+      idPrefixes: ["stremtv-us:"],
+      resources: ["catalog", "meta", "stream"],
+      catalogs: [{ type: "tv", id: "us-all", name: "US" }],
+    });
+    router = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/catalog/tv/us-all.json",
+        {
+          status: 200,
+          data: { metas: [{ id: "stremtv-us:00sReplay.us", type: "tv", name: "00s Replay" }] },
+        },
+      ],
+      [
+        "/meta/tv/stremtv-us:00sReplay.us.json",
+        {
+          status: 200,
+          data: {
+            meta: { id: "stremtv:00sReplay.us", type: "tv", name: "00s Replay", videos: [] },
+          },
+        },
+      ],
+      ["/stream/tv/stremtv-us:00sReplay.us.json", { status: 200, data: { streams: [PLAYABLE] } }],
+    ]);
+    const r = await probe(m);
+    expect(r.detail.mode).toBe("content");
+    expect(r.success).toBe(true);
+  });
+
+  it("takes only titles of a probed type from catalogs typed outside every stream type, listing each catalog once (Stremio Status)", async () => {
+    const m = addon({
+      types: ["tv", "movie", "series"],
+      resources: ["catalog", "stream"],
+      catalogs: [{ type: "other", id: "addon-status", name: "Status" }],
+    });
+    idsourcesMock.hasSourceFor = () => true;
+    const streams: string[] = [];
+    const route = routes([
+      ["/manifest.json", manifestOk(m.manifest)],
+      [
+        "/catalog/other/addon-status.json",
+        {
+          status: 200,
+          data: { metas: [{ id: "stremio-status:torrentio", type: "tv", name: "Torrentio" }] },
+        },
+      ],
+      ["/stream/tv/stremio-status:torrentio.json", { status: 200, data: { streams: [PLAYABLE] } }],
+    ]);
+    router = (url) => {
+      if (url.includes("/stream/")) streams.push(url.slice(BASE.length));
+      return route(url);
+    };
+    const r = await probe(m);
+    expect(r.success).toBe(true);
+    expect(streams).toEqual(["/stream/tv/stremio-status:torrentio.json"]);
+    expect(r.detail.perResource.find((p) => p.resource === "catalog")?.summary).toBe(
+      "other 1 metas",
+    );
+  });
+});

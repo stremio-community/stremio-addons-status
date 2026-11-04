@@ -304,19 +304,19 @@ interface CatalogWalk {
   details: DetailRow[];
 }
 
-function judgeCatalogWalk(attempts: CatalogAttempt[], type?: string): CatalogWalk {
+function judgeCatalogWalk(attempts: CatalogAttempt[]): CatalogWalk {
   const found = attempts.find((a) => a.kind === "items");
   const shown = found ?? attempts[0];
   const others = attempts.filter((a) => a !== shown);
   const details = [...shown.details, ...others.map((a) => alsoTriedRow(a.path, a.summary))];
   if (found) {
-    return { ok: true, content: true, label: type ?? found.type, summary: found.summary, details };
+    return { ok: true, content: true, label: found.type, summary: found.summary, details };
   }
   const summaries = [...new Set(attempts.map((a) => a.summary))].join(", ");
   return {
     ok: attempts.every((a) => a.ok),
     content: false,
-    label: type ?? shown.type,
+    label: shown.type,
     summary: attempts.length === 1 ? shown.summary : `${summaries} (${attempts.length} tries)`,
     details,
   };
@@ -339,7 +339,10 @@ function validMeta(f: MetaFetch): Record<string, unknown> | undefined {
     : undefined;
 }
 
-/** The parts of an untrusted meta answer that decide its stream ID, keeping only well-formed values. */
+/**
+ * The parts of an untrusted meta answer that decide its stream ID, keeping only well-formed values.
+ * Stremio opens a title under the ID its catalog listed, which is what a meta without videos plays, even when the meta names itself differently.
+ */
 function playableMeta(meta: Record<string, unknown>, id: string): PlayableMeta {
   const hints = meta.behaviorHints as { defaultVideoId?: unknown } | null | undefined;
   const videos = Array.isArray(meta.videos)
@@ -349,7 +352,7 @@ function playableMeta(meta: Record<string, unknown>, id: string): PlayableMeta {
       )
     : undefined;
   return {
-    id: typeof meta.id === "string" && meta.id !== "" ? meta.id : id,
+    id,
     videos,
     behaviorHints:
       typeof hints?.defaultVideoId === "string"
@@ -785,6 +788,7 @@ async function* catalogItems(
   fetch: CatalogFetcher,
   plans: CatalogPlan[],
   attempts: CatalogAttempt[],
+  accepts: (type: string) => boolean = () => true,
 ): AsyncGenerator<Candidate> {
   for (const plan of plans.slice(0, MAX_CATALOGS_PER_TYPE)) {
     let attempt: CatalogAttempt | undefined;
@@ -794,7 +798,7 @@ async function* catalogItems(
       if (attempt.kind !== "empty") break;
     }
     if (attempt?.notice && attempt.notice.placeholder !== "no-content") return;
-    yield* attempt?.items.slice(0, ITEMS_PER_CATALOG) ?? [];
+    yield* (attempt?.items ?? []).filter((item) => accepts(item.type)).slice(0, ITEMS_PER_CATALOG);
   }
 }
 
@@ -1031,10 +1035,15 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
 
     const declares = (type: string) => plans.some((plan) => sameType(plan.catalog.type, type));
     const streamTypesCataloged = streamRes.types.some(declares);
-    // Catalogs typed outside every stream type (`porn` holding `movie` titles) may still hold titles of a stream type.
-    const plansFor = (types: readonly string[]) => {
+    /**
+     * Titles from the catalogs typed as one of `types`, whatever type each title has.
+     * When no catalog is typed as any stream type (`porn` catalogs holding `movie` titles), every catalog is searched for titles of `types` themselves.
+     */
+    const ownTitles = (types: readonly string[], attempts: CatalogAttempt[]) => {
       const typed = plans.filter((plan) => types.some((t) => sameType(plan.catalog.type, t)));
-      return typed.length > 0 || streamTypesCataloged ? typed : plans;
+      if (typed.length > 0) return catalogItems(catalogOnce, typed, attempts);
+      if (streamTypesCataloged) return sequence<Candidate>();
+      return catalogItems(catalogOnce, plans, attempts, (type) => types.includes(type));
     };
     const remembered = (p: TypeProbe) =>
       (async function* (): AsyncGenerator<Candidate> {
@@ -1057,7 +1066,7 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
         p,
         sequence(
           curated.filter((c) => c.type === p.type),
-          catalogItems(catalogOnce, plansFor([p.type!]), p.catalogAttempts),
+          ownTitles([p.type!], p.catalogAttempts),
         ),
       ),
     );
@@ -1089,15 +1098,7 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
           ? borrowFor(p)
           : sequence(
               curated.filter((c) => otherStreamTypes.includes(c.type)),
-              catalogItems(
-                catalogOnce,
-                otherStreamTypes.some(declares)
-                  ? plansFor(otherStreamTypes)
-                  : streamTypesCataloged
-                    ? []
-                    : plans,
-                p.catalogAttempts,
-              ),
+              ownTitles(otherStreamTypes, p.catalogAttempts),
               remembered(p),
               borrowedOf((c) => !isTargetedStreamProbeType(c.type)),
             ),
@@ -1109,8 +1110,13 @@ export async function probe(addon: NormalizedAddon): Promise<ProbeResult> {
       probes.flatMap((p) => p.catalogAttempts),
       (a) => a.path,
     );
-    const walked = probes.filter((p) => p.catalogAttempts.length > 0);
-    walks = walked.map((p) => judgeCatalogWalk(p.catalogAttempts, p.type));
+    // A catalog request shared by several probes shows once, under the first probe that made it.
+    const shown = new Set<string>();
+    walks = probes.flatMap((p) => {
+      const own = p.catalogAttempts.filter((a) => !shown.has(a.path));
+      own.forEach((a) => shown.add(a.path));
+      return own.length > 0 ? [judgeCatalogWalk(own)] : [];
+    });
     if (walks.length > 0) {
       const labelled = walks.length > 1 || targeted.some((p) => p.catalogAttempts.length > 0);
       perResource.push({
