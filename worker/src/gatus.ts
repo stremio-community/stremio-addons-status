@@ -149,7 +149,7 @@ export function buildExternalEndpoints(
               type: "discord",
               ...(e.hostname ? { description: e.hostname } : {}),
               "send-on-resolved": true,
-              "failure-threshold": 1,
+              "failure-threshold": 2,
               "success-threshold": 1,
             },
           ],

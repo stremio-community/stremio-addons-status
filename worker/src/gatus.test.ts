@@ -1,4 +1,6 @@
 import { afterEach, describe, it, expect, vi } from "vitest";
+import { readFile } from "node:fs/promises";
+import { parse } from "yaml";
 import { buildConditions, buildEndpoints, buildExternalEndpoints, pushResult } from "./gatus.js";
 import type { NormalizedAddon, ProbeResult } from "./types.js";
 
@@ -344,6 +346,27 @@ describe("buildExternalEndpoints", () => {
   it("omits the alert description when there is no hostname", () => {
     const [entry] = buildExternalEndpoints(buildEndpoints([addon("not a url")]), true);
     expect(entry.alerts?.[0]).not.toHaveProperty("description");
+  });
+
+  it("alerts on the same thresholds as the static endpoints, so one bad cycle pages nobody", async () => {
+    const base = parse(
+      await readFile(new URL("../../gatus/config.d/00-base.yaml", import.meta.url), "utf8"),
+    ) as { endpoints: Array<{ alerts?: Array<Record<string, unknown>> }> };
+    const thresholds = (alert: Record<string, unknown>) => ({
+      "failure-threshold": alert["failure-threshold"],
+      "success-threshold": alert["success-threshold"],
+    });
+    const staticThresholds = base.endpoints.flatMap((e) => e.alerts ?? []).map(thresholds);
+    const [entry] = buildExternalEndpoints(
+      buildEndpoints([addon("https://aio.example.org/manifest.json")]),
+      true,
+    );
+    expect(thresholds(entry.alerts![0])).toEqual({
+      "failure-threshold": 2,
+      "success-threshold": 1,
+    });
+    expect(staticThresholds).not.toHaveLength(0);
+    for (const t of staticThresholds) expect(t).toEqual(thresholds(entry.alerts![0]));
   });
 
   it("omits alerts when Discord is disabled", () => {
