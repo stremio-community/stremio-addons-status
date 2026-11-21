@@ -21,4 +21,4 @@ images:
   # Flux commits each new tag to the marked line.
   - name: worker
     newName: ghcr.io/stremio-community/stremio-addons-status
-    newTag: main-1795286805-af82863 # {"$imagepolicy": "flux-system:stremio-addons-status:tag"}
+    newTag: main-1795294883-a4f8c73 # {"$imagepolicy": "flux-system:stremio-addons-status:tag"}
